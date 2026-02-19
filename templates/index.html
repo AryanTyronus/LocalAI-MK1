@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Local AI</title>
+    <style>
+        body {
+            font-family: Arial;
+            margin: 40px;
+        }
+
+        #chat {
+            height: 400px;
+            overflow-y: scroll;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+
+        input {
+            width: 70%;
+            padding: 10px;
+        }
+
+        button {
+            padding: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+<h2>Local AI</h2>
+
+<div id="chat"></div>
+
+<input id="message" type="text" placeholder="Type message...">
+<button onclick="sendMessage()">Send</button>
+
+<script>
+async function sendMessage() {
+
+    let input = document.getElementById("message");
+    let chat = document.getElementById("chat");
+
+    let msg = input.value;
+
+    if (!msg) return;
+
+    chat.innerHTML += "<p><b>You:</b> " + msg + "</p>";
+
+    input.value = "";
+
+    let response = await fetch("/chat", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ message: msg })
+    });
+
+    let data = await response.json();
+
+    chat.innerHTML += "<p><b>AI:</b> " + data.reply + "</p>";
+
+    chat.scrollTop = chat.scrollHeight;
+}
+</script>
+
+</body>
+</html>
