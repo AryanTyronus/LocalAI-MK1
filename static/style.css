@@ -1,0 +1,195 @@
+/* ───────── Reset ───────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ───────── Theme ───────── */
+:root {
+  --bg: #111111;
+  --panel: #181818;
+  --border: #2a2a2a;
+
+  --bubble-user: #1e1e1e;
+  --bubble-ai: #111111;
+
+  --text: #ececec;
+  --text-dim: #8e8e8e;
+  --text-ghost: #555;
+
+  --send-bg: #ececec;
+  --send-fg: #111;
+  --send-hover: #ffffff;
+
+  --radius: 16px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ───────── Base ───────── */
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Center app */
+body {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+}
+
+/* ───────── App Container ───────── */
+.app {
+  width: 100%;
+  max-width: 900px;
+  height: 92vh;
+
+  display: flex;
+  flex-direction: column;
+
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  overflow: hidden;
+
+  box-shadow: 0 20px 60px rgba(0,0,0,.6);
+}
+
+/* ───────── Header ───────── */
+.header {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.header__title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+/* ───────── Feed ───────── */
+.feed {
+  flex: 1;
+  overflow-y: auto;
+  padding: 32px 24px;
+  scroll-behavior: smooth;
+}
+
+.feed::-webkit-scrollbar {
+  width: 6px;
+}
+.feed::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+/* ───────── Messages ───────── */
+.msg-row {
+  display: flex;
+  max-width: 760px;
+  margin: 0 auto 6px;
+}
+
+.msg-row--user {
+  justify-content: flex-end;
+}
+
+.msg-row--ai {
+  justify-content: flex-start;
+}
+
+.bubble {
+  max-width: 72%;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bubble--user {
+  background: var(--bubble-user);
+  border-bottom-right-radius: 6px;
+}
+
+.bubble--ai {
+  background: var(--bubble-ai);
+  border-left: 2px solid var(--border);
+  border-bottom-left-radius: 6px;
+  padding-left: 14px;
+}
+
+/* ───────── Composer ───────── */
+.composer-wrap {
+  padding: 16px 20px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.composer {
+  display: flex;
+  gap: 10px;
+  max-width: 760px;
+  margin: 0 auto;
+  background: #1c1c1c;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 10px 12px 10px 16px;
+}
+
+.composer__input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  color: var(--text);
+  font-size: 15px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.composer__input::placeholder {
+  color: var(--text-ghost);
+}
+
+.composer__send {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: none;
+  background: var(--send-bg);
+  color: var(--send-fg);
+  cursor: pointer;
+  transition: transform .1s ease, background .15s ease;
+}
+
+.composer__send:hover:not(:disabled) {
+  background: var(--send-hover);
+}
+
+.composer__send:active:not(:disabled) {
+  transform: scale(.92);
+}
+
+.composer__send:disabled {
+  background: var(--border);
+  color: var(--text-ghost);
+  cursor: not-allowed;
+}
+
+.composer__disclaimer {
+  max-width: 760px;
+  margin: 10px auto 0;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-ghost);
+}

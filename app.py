@@ -8,19 +8,33 @@ ai_service = AIService()
 def home():
     return render_template("index.html")
 
+
 @app.route("/chat", methods=["POST"])
 def chat_api():
     data = request.get_json()
-    user_message = data.get("message", "")
+
+    if not data:
+        return jsonify({"response": "Invalid request format."}), 400
+
+    user_message = data.get("message", "").strip()
 
     if not user_message:
-        return jsonify({"error": "Empty message"}), 400
+        return jsonify({"response": "Please enter a message."}), 400
 
     try:
         reply = ai_service.ask(user_message)
-        return jsonify({"reply": reply})
+
+        # Standardized response key
+        return jsonify({
+            "response": reply
+        })
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print("Backend Error:", str(e))
+        return jsonify({
+            "response": "Something went wrong while generating a response."
+        }), 500
+
 
 if __name__ == "__main__":
-    app.run(debug=False)
+    app.run(host="0.0.0.0", port=8000, debug=False)
