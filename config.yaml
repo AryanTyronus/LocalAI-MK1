@@ -1,0 +1,87 @@
+model:
+  default: qwen-7b
+  max_tokens: 2048
+
+# ============================================
+# DEBUG & ERROR HANDLING
+# ============================================
+debug:
+  enabled: true  # Set to true to return full error details in API responses
+  print_stack_traces: true  # Always print stack traces to console
+
+# ============================================
+# 4-LAYER MEMORY ARCHITECTURE CONFIGURATION
+# ============================================
+
+memory:
+  # Layer 1: Short-term memory (active conversation)
+  short_term:
+    max_messages: 10        # Keep last 10 messages in active window
+    enabled: true
+
+  # Layer 2: Rolling summary memory (compressed conversation history)
+  rolling_summary:
+    enabled: true
+    trigger_threshold: 15   # Summarize when messages exceed this
+    summary_size: 3         # Keep 3 most recent summaries
+    preserve_facts: true    # Preserve key facts, decisions, topics
+
+  # Layer 3: Long-term semantic memory (vector embeddings with search)
+  semantic:
+    enabled: true
+    embedding_model: "all-MiniLM-L6-v2"  # Lightweight embedding model
+    index_type: "faiss"     # Vector index backend
+    similarity_threshold: 0.5
+    max_results: 3          # Maximum memories to retrieve per query
+    persist_interval: 10    # Save index every N updates
+
+  # Layer 4: Structured persistent memory (user profile & state)
+  structured:
+    enabled: true
+    file: "structured_memory.json"
+    auto_extract_profile: true  # Auto-extract user info
+    categories:
+      - user_profile        # Name, age, preferences
+      - long_term_goals     # Goals and aspirations
+      - preferences         # Communication style, interests
+      - system_state        # Important system variables
+
+# Memory management
+  thresholds:
+    max_total_memory_mb: 500      # Total memory budget
+    cleanup_trigger: 0.85         # Cleanup when 85% full
+    semantic_memory_batch: 50     # Batch size for indexing
+
+# Summarization settings
+summarization:
+  model_type: "extractive"  # or "abstractive" (requires larger model)
+  key_phrases_count: 5      # Extract N key phrases per summary
+  preserve_unresolved: true  # Keep unresolved questions
+
+search:
+  default_top_k: 3
+  include_summaries: true   # Include summary memory in searches
+  include_semantic: true    # Include semantic memory in searches
+
+# Mode configurations for different pipelines
+modes:
+  chat:
+    system_prompt: |
+      You are a helpful, friendly assistant. Answer concisely and helpfully.
+    temperature: 0.7
+    retrieve_documents: true
+    memory_profile: short_term_heavy
+
+  coding:
+    system_prompt: |
+      You are an expert coding assistant. Provide code examples and explanations. Be precise.
+    temperature: 0.2
+    retrieve_documents: false
+    memory_profile: short_term_minimal
+
+  research:
+    system_prompt: |
+      You are a professional research assistant. Provide detailed, well-sourced explanations.
+    temperature: 0.3
+    retrieve_documents: true
+    memory_profile: rolling_summary_heavy

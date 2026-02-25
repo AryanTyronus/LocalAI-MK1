@@ -15,9 +15,11 @@ from sentence_transformers import SentenceTransformer
 import faiss
 from pypdf import PdfReader
 
+from core.chat_formatter import ChatFormatter, ModelType
+
 # ================= SETTINGS =================
 
-MODEL_NAME = "mlx-community/Mistral-7B-Instruct-v0.2-4bit"
+MODEL_NAME = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 
 MEMORY_FILE = "structured_memory.json"
 KNOWLEDGE_FOLDER = "knowledge"
@@ -33,6 +35,8 @@ model, tokenizer = load(MODEL_NAME)
 
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
+# Initialize chat formatter
+chat_formatter = ChatFormatter(ModelType.QWEN2_5)
 # =====================================================
 # 1️⃣ SEMANTIC MEMORY SYSTEM
 # =====================================================
@@ -250,17 +254,17 @@ def ask_ai(user_input):
 
     history_text = "\n".join(chat_history[-MAX_HISTORY_TURNS*2:])
 
-    prompt = f"""
-You are a personal AI assistant.
+    system_message = """You are a personal AI assistant.
 
 If the user asks academic or study questions, act as a JEE-level physics and math tutor.
 Otherwise respond normally and conversationally.
 
 IMPORTANT:
 - Answer ONLY the latest user message.
-- Never continue previous answers unless asked.
+- Never continue previous answers unless asked."""
 
-Relevant User Memory:
+    # Build enhanced user context with memory and study materials
+    user_context = f"""Relevant User Memory:
 {relevant_memory}
 
 Relevant Study Material:
@@ -269,9 +273,13 @@ Relevant Study Material:
 Recent Conversation:
 {history_text}
 
-User: {user_input}
-Assistant:
-"""
+User: {user_input}"""
+
+    # Use chat formatter for proper Qwen2.5 formatting
+    prompt = chat_formatter.build_prompt(
+        system=system_message,
+        user=user_context
+    )
 
     response = generate(
         model,
@@ -280,7 +288,8 @@ Assistant:
         max_tokens=300
     )
 
-    reply = response.split("Assistant:")[-1].strip()
+    # Extract clean response using formatter
+    reply = chat_formatter.extract_response(response).strip()
 
     chat_history.append(f"Assistant: {reply}")
 

@@ -20,10 +20,27 @@ class MemoryStore:
             self.memory_items = []
             return
 
-        with open(MEMORY_FILE, "r") as f:
-            self.memory_items = json.load(f)
+        try:
+            with open(MEMORY_FILE, "r") as f:
+                data = json.load(f)
 
-        self._build_index()
+            # Ensure we have a list of dicts
+            if not isinstance(data, list):
+                logger.warning("Memory file has unexpected format; starting with empty memory store")
+                self.memory_items = []
+            else:
+                # Filter/clean entries to expected shape
+                cleaned = []
+                for item in data:
+                    if isinstance(item, dict) and 'embedding' in item:
+                        cleaned.append(item)
+                self.memory_items = cleaned
+
+            self._build_index()
+        except Exception as e:
+            logger.warning(f"Failed to load memory store, starting fresh: {e}")
+            self.memory_items = []
+            self.index = None
 
     def _build_index(self):
         if not self.memory_items:

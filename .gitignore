@@ -1,18 +1,22 @@
+# Mac
+.DS_Store
+
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.db
-
-# Virtual environment
 .venv/
-venv/
 
-# Environment variables
+# Env files
 .env
 
-# macOS
-.DS_Store
+# Logs
+*.log
 
+# FAISS / vector indexes
+*.faiss
+
+# Memory dumps (optional if you don’t want to push runtime data)
+semantic_memory.json
 structured_memory.json
