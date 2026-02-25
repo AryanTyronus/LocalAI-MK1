@@ -20,3 +20,6 @@ __pycache__/
 # Memory dumps (optional if you don’t want to push runtime data)
 semantic_memory.json
 structured_memory.json
+knowledge
+PHASE2_PLAN.md
+TODO.md

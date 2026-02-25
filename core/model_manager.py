@@ -1,4 +1,10 @@
+"""
+ModelManager - Handles LLM model loading and generation.
+Supports streaming generation stub for future implementation.
+"""
+
 import os
+from typing import Generator
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from mlx_lm import generate as mlx_generate
@@ -6,11 +12,10 @@ from core.config import MODEL_NAME
 from core.logger import logger
 from core.chat_formatter import ChatFormatter, Message, Role, ModelType
 
-# If running in dev mode, a lightweight fake model will be used to avoid
-# downloading large models and consuming excessive resources.
-
 
 class FakeModelManager:
+    """Lightweight fake model for development mode."""
+    
     def __init__(self):
         logger.info("Using FakeModelManager (LOCALAI_DEV_MODE=1)")
         self.tokenizer = None
@@ -24,6 +29,25 @@ class FakeModelManager:
             return 'def hello():\n    return "hello"'
         return 'This is a fake model response.'
 
+    def generate_stream(self, prompt, max_tokens=300, temperature: float = 0.7) -> Generator[str]:
+        """
+        Streaming generation stub for FakeModelManager.
+        
+        Yields response chunks (currently yields full response).
+        Future implementation will stream actual tokens.
+        """
+        response = self.generate(prompt, max_tokens, temperature)
+        # Simulate streaming by yielding small chunks
+        # Split into words and yield incrementally
+        words = response.split()
+        for i in range(0, len(words), 3):  # Yield 3 words at a time
+            chunk = ' '.join(words[i:i+3])
+            if chunk:
+                yield chunk + ' '
+        # Ensure we yield the complete response
+        if not words:
+            yield response
+
     def format_chat(self, system: str, user: str, history: str = None) -> str:
         return (system or '') + "\n\n" + (user or '')
 
@@ -33,8 +57,22 @@ class FakeModelManager:
     def embed(self, texts):
         return np.zeros((len(texts), self._embed_dim), dtype=float)
 
+    def estimate_tokens(self, text: str) -> int:
+        """
+        Estimate token count using approximation: len(text.split()) * 1.3
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Estimated token count
+        """
+        return int(len(text.split()) * 1.3)
+
 
 class ModelManager:
+    """Real model manager for production mode."""
+    
     _instance = None
 
     def __init__(self):
@@ -86,6 +124,47 @@ class ModelManager:
         # Extract clean response
         return self.chat_formatter.extract_response(output)
 
+    def generate_stream(self, prompt, max_tokens=300, temperature: float = 0.7) -> Generator[str]:
+        """
+        Streaming generation for ModelManager.
+        
+        Since mlx_lm may not support true streaming, we generate the full response
+        and yield it in small chunks to simulate streaming.
+        
+        Args:
+            prompt: The formatted prompt string
+            max_tokens: Maximum tokens to generate
+            temperature: Generation temperature
+            
+        Yields:
+            Response chunks
+        """
+        # Generate full response first
+        response = self.generate(prompt, max_tokens, temperature)
+        
+        # Simulate streaming by yielding small chunks
+        # Split into words and yield incrementally
+        words = response.split()
+        for i in range(0, len(words), 3):  # Yield 3 words at a time
+            chunk = ' '.join(words[i:i+3])
+            if chunk:
+                yield chunk + ' '
+        # Ensure we yield the complete response
+        if not words:
+            yield response
+    
+    def estimate_tokens(self, text: str) -> int:
+        """
+        Estimate token count using approximation: len(text.split()) * 1.3
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Estimated token count
+        """
+        return int(len(text.split()) * 1.3)
+
     def format_chat(self, system: str, user: str, history: str = None) -> str:
         """
         Format a chat conversation for model generation.
@@ -114,3 +193,4 @@ class ModelManager:
 
     def embed(self, texts):
         return self.embedder.encode(texts)
+

@@ -1,89 +1,100 @@
-from flask import Flask, request, jsonify, render_template
-from services.ai_service import AIService
+"""
+Flask application - HTTP layer with ZERO business logic.
+
+This module contains ONLY:
+- Request parsing
+- Response formatting
+- Error handling
+
+NO memory logic, NO prompt building, NO model calls, NO config logic.
+All business logic is in AIService.
+"""
+
+from flask import Flask, request, jsonify, render_template, Response
 import os
 import socket
 
-app = Flask(__name__)
 from core.dependency_container import DependencyContainer
+from core.config import DEBUG_MODE
+from core.logger import logger
 
+app = Flask(__name__)
+
+# Global container and service (lazy initialization)
 _container = None
 _ai_service = None
 
+
 def get_ai_service():
+    """
+    Get the AIService instance (lazy initialization).
+    
+    Returns:
+        AIService instance
+    """
     global _container, _ai_service
     if _ai_service is None:
         try:
             _container = DependencyContainer()
             _ai_service = _container.get_ai_service()
+            logger.info("AIService initialized successfully")
         except Exception as e:
-            # Log and print full stack trace
             import traceback
-            print(f"\n=== CRITICAL: AI SERVICE INITIALIZATION FAILED ===")
-            print(f"Error type: {type(e).__name__}")
-            print(f"Error message: {str(e)}")
+            logger.error(f"AI SERVICE INITIALIZATION FAILED: {type(e).__name__}: {str(e)}")
             traceback.print_exc()
-            print(f"===================================================\n")
             raise
     return _ai_service
 
+
+# ===================
+# Routes
+# ===================
+
 @app.route("/")
 def home():
+    """Render the home page."""
     return render_template("index.html")
 
 
 @app.route("/chat", methods=["POST"])
 def chat_api():
+    """
+    Chat endpoint - thin controller with ZERO business logic.
+    
+    Expected JSON payload:
+        {
+            "message": "user message",
+            "mode": "chat"  // optional, defaults to "chat"
+        }
+    
+    Returns:
+        JSON response with "response" field
+    """
+    # 1. Parse request
     data = request.get_json()
-
+    
     if not data:
         return jsonify({"response": "Invalid request format."}), 400
-
+    
     user_message = data.get("message", "").strip()
-    mode = data.get("mode", "chat")  # default to 'chat'
-
+    mode = data.get("mode", "chat")
+    
     if not user_message:
         return jsonify({"response": "Please enter a message."}), 400
-
+    
+    # 2. Call AIService (all business logic is here)
     try:
-        svc = None
-        try:
-            svc = get_ai_service()
-        except Exception as e:
-            # Model initialization failed
-            import traceback
-            traceback.print_exc()
-            print(f"\n=== AI SERVICE INIT ERROR ===")
-            print(f"Error type: {type(e).__name__}")
-            print(f"Error message: {str(e)}")
-            print(f"=============================\n")
-            
-            # Import DEBUG config
-            from core.config import DEBUG_MODE
-            
-            if DEBUG_MODE:
-                return jsonify({
-                    "response": f"Service initialization failed: {type(e).__name__}: {str(e)}",
-                    "error": str(e),
-                    "error_type": type(e).__name__
-                }), 503
-            else:
-                return jsonify({"response": "Model initialization failed. Please try again later."}), 503
-
-        reply = svc.ask(user_message, mode=mode)
+        svc = get_ai_service()
+        
+        # Use the new generate_response method
+        reply = svc.generate_response(user_message, mode=mode)
+        
         return jsonify({"response": reply})
-
+    
     except Exception as e:
         import traceback
+        logger.error(f"Chat endpoint error: {type(e).__name__}: {str(e)}")
         traceback.print_exc()
-        print(f"\n=== CHAT ENDPOINT ERROR ===")
-        print(f"Error type: {type(e).__name__}")
-        print(f"Error message: {str(e)}")
-        print(f"User message: {user_message}")
-        print(f"Mode: {mode}")
-        print(f"===========================\n")
-        
-        # Import DEBUG config
-        from core.config import DEBUG_MODE
         
         if DEBUG_MODE:
             return jsonify({
@@ -95,8 +106,66 @@ def chat_api():
             return jsonify({"response": "Something went wrong while generating a response."}), 500
 
 
+@app.route("/chat/stream", methods=["POST"])
+def chat_stream():
+    """
+    Streaming chat endpoint using Server-Sent Events (SSE).
+    
+    Expected JSON payload:
+        {
+            "message": "user message",
+            "mode": "chat"  // optional, defaults to "chat"
+        }
+    
+    Returns:
+        Server-Sent Events stream with "data" field
+    """
+    # 1. Parse request
+    data = request.get_json()
+    
+    if not data:
+        return jsonify({"response": "Invalid request format."}), 400
+    
+    user_message = data.get("message", "").strip()
+    mode = data.get("mode", "chat")
+    
+    if not user_message:
+        return jsonify({"response": "Please enter a message."}), 400
+    
+    # 2. Stream response using SSE
+    def generate():
+        try:
+            svc = get_ai_service()
+            
+            for chunk in svc.generate_stream(user_message, mode=mode):
+                # Send chunk as SSE data
+                yield f"data: {chunk}\n\n"
+                
+        except Exception as e:
+            import traceback
+            logger.error(f"Streaming endpoint error: {type(e).__name__}: {str(e)}")
+            traceback.print_exc()
+            
+            error_msg = str(e) if DEBUG_MODE else "Streaming error occurred."
+            yield f"data: __ERROR__:{error_msg}\n\n"
+    
+    return Response(generate(), mimetype="text/event-stream")
+
+
+# ===================
+# Utility Functions
+# ===================
+
 def _find_free_port(preferred: int) -> int:
-    """Return preferred if available, otherwise scan next ports up to +50."""
+    """
+    Find a free port starting from preferred.
+    
+    Args:
+        preferred: Preferred port number
+        
+    Returns:
+        Available port number
+    """
     for port in range(preferred, preferred + 51):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
@@ -104,25 +173,29 @@ def _find_free_port(preferred: int) -> int:
                 return port
             except OSError:
                 continue
-    # Fallback to 0 -> let OS pick
     return 0
 
 
+# ===================
+# Main Entry Point
+# ===================
+
 if __name__ == "__main__":
     import argparse
-
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--preload-model", action="store_true", help="Preload model at startup")
     args, _ = parser.parse_known_args()
-
+    
     preferred = int(os.getenv('PORT', '8000'))
     chosen = _find_free_port(preferred)
+    
     if chosen != preferred:
         print(f"Port {preferred} unavailable — starting on {chosen} instead.")
     else:
         print(f"Starting server on port {chosen}")
-
-    # Optionally preload model (will instantiate DependencyContainer)
+    
+    # Optionally preload model
     if args.preload_model:
         try:
             print("Preloading model and services...")
@@ -130,6 +203,7 @@ if __name__ == "__main__":
             print("Preload complete.")
         except Exception as e:
             print(f"Preload failed: {e}")
-
-    # Allow dev mode env to be set externally (e.g., LOCALAI_DEV_MODE=1)
+    
+    # Run the Flask app
     app.run(host="0.0.0.0", port=chosen, debug=False)
+
