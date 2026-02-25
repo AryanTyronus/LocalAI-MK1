@@ -6,6 +6,11 @@ Coordinates four memory layers:
 2. Rolling summary memory (compressed history)
 3. Semantic memory (vector-indexed facts)
 4. Structured persistent memory (user profile)
+
+Features:
+- Memory scoring with weighted priorities
+- Semantic deduplication on insertion
+- Context compression for token budget
 """
 
 import json
@@ -51,9 +56,11 @@ class MemoryManager:
 
         # Layer 3: Semantic memory (vector-indexed)
         self.semantic = SemanticMemory(self.model_manager)
+        logger.debug(f"Semantic memory initialized: {self.semantic.get_info()}")
 
         # Layer 4: Structured persistent memory
         self.structured = StructuredMemory(MEMORY_FILE)
+        logger.debug(f"Structured memory loaded: {len(self.structured.get_all())} keys")
 
         logger.info("4-Layer Memory Manager initialized")
 
@@ -169,20 +176,25 @@ class MemoryManager:
 
     def search_semantic_memory(self, query: str, top_k: int = None) -> List[str]:
         """
-        Search semantic memory for relevant facts.
+        Search semantic memory for relevant facts using weighted scoring.
 
         Args:
             query: Search query
             top_k: Number of results to return
 
         Returns:
-            List of relevant memory entries
+            List of relevant memory entries sorted by weighted score
         """
         if not SEMANTIC_CONFIG.get('enabled', True):
             return []
 
         top_k = top_k or DEFAULT_TOP_K
-        return self.semantic.search(query, k=top_k)
+        
+        # Use weighted scoring search (Phase 3)
+        scored_results = self.semantic.search_with_scoring(query, k=top_k)
+        
+        # Return just the text, sorted by score
+        return [text for text, score, _ in scored_results]
 
     def get_semantic_context(self, query: str) -> str:
         """
@@ -235,30 +247,99 @@ class MemoryManager:
     def extract_profile_facts(self, message: str) -> None:
         """
         Auto-extract user profile information from message.
-        Looks for patterns like "my name is X", "I'm Y years old", etc.
+        Looks for patterns like "my name is X", "I'm Y years old", "my favorite color is X", etc.
 
         Args:
             message: User message to parse
         """
         message_lower = message.lower()
+        import re
+        
+        logger.debug(f"[EXTRACT] Processing: {message[:100]}")
 
         # Name extraction
         if "my name is" in message_lower:
             name = message.split("my name is")[-1].split(".")[0].strip()
+            logger.debug(f"[EXTRACT] Found name: {name}")
             self.update_structured_memory("user.name", name)
 
         # Age extraction
-        import re
         age_match = re.search(r"i'm?\s+(\d+)\s+years? old", message_lower)
         if age_match:
             age = int(age_match.group(1))
+            logger.debug(f"[EXTRACT] Found age: {age}")
             self.update_structured_memory("user.age", age)
 
         # Birth year extraction
         year_match = re.search(r"born in?\s+(\d{4})", message_lower)
         if year_match:
             year = int(year_match.group(1))
+            logger.debug(f"[EXTRACT] Found birth year: {year}")
             self.update_structured_memory("user.birth_year", year)
+        
+        # ================================================
+        # PREFERENCE EXTRACTION
+        # ================================================
+        
+        # Favorite color extraction
+        color_match = re.search(r"my favorite colou?r is\s+(.+?)(?:\.|,|$)", message_lower)
+        if color_match:
+            color = color_match.group(1).strip()
+            logger.debug(f"[EXTRACT] Found favorite color: {color}")
+            self.update_structured_memory("preferences.favorite_color", color)
+        else:
+            logger.debug(f"[EXTRACT] Color pattern NO MATCH on: {message_lower}")
+        
+        # Generic favorite [thing] extraction
+        favorite_match = re.search(r"my favorite\s+(\w+)\s+is\s+(.+?)(?:\.|,|$)", message_lower)
+        if favorite_match:
+            thing_type = favorite_match.group(1).strip()
+            thing_value = favorite_match.group(2).strip()
+            logger.debug(f"[EXTRACT] Found favorite {thing_type}: {thing_value}")
+            self.update_structured_memory(f"preferences.favorite_{thing_type}", thing_value)
+        
+        # Preference extraction: "I prefer..."
+        prefer_match = re.search(r"i prefer\s+(.+?)(?:\.|,|$)", message_lower)
+        if prefer_match:
+            preference = prefer_match.group(1).strip()
+            logger.debug(f"[EXTRACT] Found preference: {preference}")
+            # Store as a preference (could be extended to track multiple)
+            self.update_structured_memory("preferences.general_preference", preference)
+        
+        # "I like" extraction (for preferences)
+        like_match = re.search(r"i like\s+(.+?)(?:\.|,|$)", message_lower)
+        if like_match:
+            thing = like_match.group(1).strip()
+            logger.debug(f"[EXTRACT] Found like: {thing}")
+            # Store interests/likes
+            interests = self.get_structured_memory("preferences.interests") or []
+            if isinstance(interests, list):
+                if thing not in interests:
+                    interests.append(thing)
+                self.update_structured_memory("preferences.interests", interests)
+
+        # Struggle/difficulty extraction: "I struggle with X", "I'm struggling in X", "I have trouble with X", "I find X difficult"
+        # Accept variations: "I struggle", "I'm struggling", "I am struggling", "I have trouble"
+        struggle_match = re.search(r"\b(?:i(?:'m| am)?\s+(?:struggle|struggling|have trouble)\s+(?:in|with)\s+(.+?))(?:\.|,|$)", message_lower)
+        if struggle_match:
+            subject = struggle_match.group(1).strip()
+            logger.debug(f"[EXTRACT] Found struggle/difficulty: {subject}")
+            difficulties = self.get_structured_memory("system_state.difficulties") or []
+            if isinstance(difficulties, list):
+                if subject not in difficulties:
+                    difficulties.append(subject)
+                self.update_structured_memory("system_state.difficulties", difficulties)
+
+        # Alternate phrasing: "I find X difficult"
+        find_diff_match = re.search(r"i find\s+(.+?)\s+difficult(?:\.|,|$)", message_lower)
+        if find_diff_match:
+            subject = find_diff_match.group(1).strip()
+            logger.debug(f"[EXTRACT] Found 'find difficult' match: {subject}")
+            difficulties = self.get_structured_memory("system_state.difficulties") or []
+            if isinstance(difficulties, list):
+                if subject not in difficulties:
+                    difficulties.append(subject)
+                self.update_structured_memory("system_state.difficulties", difficulties)
 
     # ================================================
     # MULTI-LAYER CONTEXT ASSEMBLY
@@ -314,6 +395,22 @@ class MemoryManager:
                 for key, value in preferences.items():
                     lines.append(f"  {key}: {value}")
 
+            system_state = structured.get('system_state', {})
+            if system_state:
+                # Include known system_state fields such as difficulties
+                lines.append("\nSystem State:")
+                # If difficulties is a list, format nicely
+                difficulties = system_state.get('difficulties')
+                if isinstance(difficulties, list) and difficulties:
+                    lines.append("  Difficulties:")
+                    for d in difficulties:
+                        lines.append(f"    - {d}")
+                # Include any other keys in system_state
+                for k, v in system_state.items():
+                    if k == 'difficulties':
+                        continue
+                    lines.append(f"  {k}: {v}")
+
             goals = structured.get('goals', [])
             if goals:
                 lines.append("\nGoals:")
@@ -351,6 +448,7 @@ class MemoryManager:
 
     def save_all(self) -> None:
         """Save all persistent memory to disk."""
+        logger.debug("Starting save_all() - saving all memory layers")
         self.structured.save()
         self.semantic.save()
         logger.info("All memory layers saved")
@@ -359,6 +457,24 @@ class MemoryManager:
         """Clear short-term memory (for new conversations)."""
         self.short_term.clear()
         logger.info("Short-term memory cleared")
+    
+    def add_user_message(self, content: str) -> None:
+        """Add a user message to short-term memory."""
+        self.add_short_term_message('user', content)
+    
+    def add_assistant_message(self, content: str) -> None:
+        """Add an assistant message to short-term memory."""
+        self.add_short_term_message('assistant', content)
+    
+    def persist_structured_memory(self) -> None:
+        """Explicitly persist structured memory to disk."""
+        self.structured.save()
+        logger.info("Structured memory persisted")
+    
+    def persist_semantic_memory(self) -> None:
+        """Explicitly persist semantic memory to disk."""
+        self.semantic.save()
+        logger.info("Semantic memory persisted")
 
 
 class StructuredMemory:
@@ -375,29 +491,52 @@ class StructuredMemory:
             filepath: Path to JSON storage file
         """
         self.filepath = filepath
-        self.data = self._load() or {
+        logger.info(f"[STRUCTURED_MEMORY] Init with filepath: {filepath}")
+        logger.info(f"[STRUCTURED_MEMORY] File exists: {os.path.exists(filepath)}")
+        logger.info(f"[STRUCTURED_MEMORY] Filepath is absolute: {os.path.isabs(filepath)}")
+        loaded_data = self._load()
+        
+        self.data = loaded_data or {
             'user': {},
             'preferences': {},
             'goals': [],
             'system_state': {},
             'created_at': datetime.now().isoformat()
         }
+        logger.info(f"[STRUCTURED_MEMORY] Initialized with data keys: {list(self.data.keys())}")
+        logger.info(f"[STRUCTURED_MEMORY] Preferences loaded: {self.data.get('preferences', {})}")
 
     def _load(self) -> Optional[Dict]:
         """Load structured memory from file."""
-        if os.path.exists(self.filepath):
-            try:
-                with open(self.filepath, 'r') as f:
-                    data = json.load(f)
-                    # Expect a dict for structured memory; if file contains other
-                    # formats (e.g., a list from older semantic dumps), ignore it
-                    if isinstance(data, dict):
-                        return data
-                    else:
-                        logger.warning("Structured memory file has unexpected format; ignoring and starting fresh.")
-                        return None
-            except Exception as e:
-                logger.warning(f"Failed to load structured memory: {e}")
+        try:
+            filepath = self.filepath
+            logger.info(f"[LOAD] Attempting to load from: {filepath}")
+            logger.info(f"[LOAD] File exists: {os.path.exists(filepath)}")
+            logger.info(f"[LOAD] File is absolute: {os.path.isabs(filepath)}")
+            logger.info(f"[LOAD] File size: {os.path.getsize(filepath) if os.path.exists(filepath) else 'N/A'}")
+            
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r') as f:
+                        data = json.load(f)
+                        logger.info(f"[LOAD] ✓ Successfully loaded data from {filepath}")
+                        logger.info(f"[LOAD] Data keys: {list(data.keys())}")
+                        logger.info(f"[LOAD] Preferences: {data.get('preferences', {})}")
+                        # Expect a dict for structured memory; if file contains other
+                        # formats (e.g., a list from older semantic dumps), ignore it
+                        if isinstance(data, dict):
+                            logger.info(f"[LOAD] ✓ Data is valid dict, returning it")
+                            return data
+                        else:
+                            logger.warning("Structured memory file has unexpected format; ignoring and starting fresh.")
+                            return None
+                except Exception as e:
+                    logger.error(f"[LOAD] ✗ Error reading file: {e}")
+                    return None
+            else:
+                logger.info(f"[LOAD] ✗ File does not exist at: {filepath}")
+        except Exception as e:
+            logger.error(f"[LOAD] ✗ Unexpected error: {e}")
         return None
 
     def set(self, key: str, value: any) -> None:
@@ -445,12 +584,30 @@ class StructuredMemory:
         return self.data.copy()
 
     def save(self) -> None:
-        """Save to disk."""
+        """Save to disk atomically using temp file + rename."""
+        if not self.data:
+            logger.debug("Structured memory data is empty, skipping save")
+            return
+            
         try:
-            with open(self.filepath, 'w') as f:
+            # Write to temp file first, then rename for atomic operation
+            temp_file = self.filepath + '.tmp'
+            with open(temp_file, 'w') as f:
                 json.dump(self.data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            
+            # Atomic rename
+            os.replace(temp_file, self.filepath)
+            logger.debug(f"Structured memory saved atomically to {self.filepath}")
         except Exception as e:
             logger.error(f"Failed to save structured memory: {e}")
+            # Clean up temp file if it exists
+            if os.path.exists(self.filepath + '.tmp'):
+                try:
+                    os.remove(self.filepath + '.tmp')
+                except Exception:
+                    pass
 
 
 # ================================================

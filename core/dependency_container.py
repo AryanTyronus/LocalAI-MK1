@@ -4,6 +4,8 @@ DependencyContainer - Wires all dependencies together.
 This container creates and wires:
 - Config
 - ModelManager
+- ModelAdapter (via ModelAdapterFactory)
+- TokenBudgetManager (Phase 2)
 - MemoryManager
 - PromptBuilder
 - ModeController
@@ -17,6 +19,8 @@ All dependencies are passed via constructor - no circular imports.
 
 from core.config import Config
 from core.model_manager import ModelManager
+from core.model_adapter import ModelAdapterFactory
+from core.token_budget import TokenBudgetManager
 from core.prompt_builder import PromptBuilder
 from core.mode_controller import ModeController
 from core.tool_registry import ToolRegistry
@@ -45,34 +49,47 @@ class DependencyContainer:
         # 2. Create ModelManager (singleton via get_instance)
         self._model_manager = ModelManager.get_instance()
         
-        # 3. Create MemoryManager (4-layer memory)
+        # 3. Create ModelAdapter via Factory (Phase 1: Model Abstraction Layer)
+        self._model_adapter = ModelAdapterFactory.create_adapter(
+            adapter_type="local",
+            model_manager=self._model_manager,
+            config=self._config
+        )
+        logger.info(f"Model adapter created: {self._model_adapter.model_name}")
+        
+        # 4. Create TokenBudgetManager (Phase 2: Token Budget Enforcement)
+        self._token_budget_manager = TokenBudgetManager(self._config)
+        logger.info(f"TokenBudgetManager initialized: max={self._config.max_context_tokens} tokens")
+        
+        # 5. Create MemoryManager (4-layer memory)
         self._memory_manager = MemoryManager()
         
-        # 4. Create PromptBuilder
+        # 6. Create PromptBuilder
         self._prompt_builder = PromptBuilder(self._config)
         
-        # 5. Configure ModeController with Config
+        # 7. Configure ModeController with Config
         ModeController.configure(self._config)
         self._mode_controller = ModeController
         
-        # 6. Create DocumentManager
+        # 8. Create DocumentManager
         self._document_manager = DocumentManager()
         
-        # 7. Register default tools
+        # 9. Register default tools
         self._register_default_tools()
         
-        # 8. Create GenerationPipeline with all dependencies
+        # 10. Create GenerationPipeline with ModelAdapter and TokenBudgetManager
         self._generation_pipeline = GenerationPipeline(
             config=self._config,
             memory_manager=self._memory_manager,
-            model_manager=self._model_manager,
+            model_adapter=self._model_adapter,
             prompt_builder=self._prompt_builder,
             mode_controller=self._mode_controller,
             document_manager=self._document_manager,
-            tool_registry=ToolRegistry
+            tool_registry=ToolRegistry,
+            token_budget_manager=self._token_budget_manager
         )
         
-        # 9. Create AIService with GenerationPipeline
+        # 11. Create AIService with GenerationPipeline
         self._ai_service = AIService(
             pipeline=self._generation_pipeline,
             config=self._config
@@ -117,6 +134,14 @@ class DependencyContainer:
     def get_model_manager(self):
         """Get the ModelManager instance."""
         return self._model_manager
+    
+    def get_model_adapter(self):
+        """Get the ModelAdapter instance (Phase 1)."""
+        return self._model_adapter
+    
+    def get_token_budget_manager(self):
+        """Get the TokenBudgetManager instance (Phase 2)."""
+        return self._token_budget_manager
     
     def get_memory_manager(self) -> MemoryManager:
         """Get the MemoryManager instance."""

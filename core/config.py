@@ -54,6 +54,9 @@ class Config:
         
         # Modes configuration
         self._modes_config = self._config.get('modes', {})
+        
+        # Token budget configuration
+        self._token_budget_config = self._config.get('token_budget', {})
     
     # ===================
     # Model Settings
@@ -209,6 +212,30 @@ class Config:
         """Get configuration for a specific mode."""
         return self._modes_config.get(mode, {})
     
+    # ===================
+    # Token Budget Settings
+    # ===================
+    
+    @property
+    def max_context_tokens(self) -> int:
+        """Get max context tokens from config."""
+        return int(self._token_budget_config.get('max_context_tokens', 32000))
+    
+    @property
+    def token_reserve_for_generation(self) -> int:
+        """Get reserve tokens for generation output."""
+        return int(self._token_budget_config.get('reserve_for_generation', 2048))
+    
+    @property
+    def token_trimming_enabled(self) -> bool:
+        """Get token trimming enabled status."""
+        return bool(self._token_budget_config.get('enable_trimming', True))
+    
+    @property
+    def token_estimation_method(self) -> str:
+        """Get token estimation method."""
+        return self._token_budget_config.get('estimation_method', 'chars')
+    
     @property
     def modes(self) -> Dict:
         """Get all mode configurations."""
@@ -304,6 +331,18 @@ INCLUDE_SEMANTIC_IN_SEARCH = _config.search_include_semantic
 
 # Modes
 MODE_CONFIG = _config.modes
+
+# Token Budget
+TOKEN_BUDGET_CONFIG = {
+    'max_context_tokens': _config.max_context_tokens,
+    'reserve_for_generation': _config.token_reserve_for_generation,
+    'enable_trimming': _config.token_trimming_enabled,
+    'estimation_method': _config.token_estimation_method
+}
+
+MAX_CONTEXT_TOKENS = _config.max_context_tokens
+TOKEN_RESERVE_FOR_GENERATION = _config.token_reserve_for_generation
+TOKEN_TRIMMING_ENABLED = _config.token_trimming_enabled
 
 
 def get_mode_config(mode: str) -> dict:

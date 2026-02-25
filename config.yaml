@@ -3,6 +3,15 @@ model:
   max_tokens: 2048
 
 # ============================================
+# TOKEN BUDGET CONFIGURATION (Phase 2)
+# ============================================
+token_budget:
+  max_context_tokens: 32000       # Maximum tokens for context (excluding generation)
+  reserve_for_generation: 2048    # Reserve tokens for generation output
+  enable_trimming: true           # Enable automatic token trimming
+  estimation_method: "chars"      # Token estimation: "chars" or "accurate"
+
+# ============================================
 # DEBUG & ERROR HANDLING
 # ============================================
 debug:
