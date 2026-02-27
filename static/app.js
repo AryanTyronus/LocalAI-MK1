@@ -1,295 +1,357 @@
 document.addEventListener("DOMContentLoaded", () => {
-
+  const feed = document.getElementById("feed");
   const input = document.getElementById("input");
   const sendBtn = document.getElementById("sendBtn");
-  const feed = document.getElementById("feed");
 
-  // Configure marked for safe markdown rendering
-  marked.setOptions({
-    breaks: true,
-    gfm: true
-  });
+  const projectSelect = document.getElementById("projectSelect");
+  const modeSelect = document.getElementById("modeSelect");
+  const memoryToggle = document.getElementById("memoryToggle");
+  const devLogToggle = document.getElementById("devLogToggle");
+  const modelDot = document.getElementById("modelDot");
+  const modelStatusText = document.getElementById("modelStatusText");
+  const devLogPanel = document.getElementById("devLogPanel");
 
-  function updateButtonState() {
-    sendBtn.disabled = input.value.trim() === "";
-  }
+  const memoryDrawerBtn = document.getElementById("memoryDrawerBtn");
+  const logsDrawerBtn = document.getElementById("logsDrawerBtn");
+  const drawer = document.getElementById("rightDrawer");
+  const drawerTitle = document.getElementById("drawerTitle");
+  const drawerContent = document.getElementById("drawerContent");
+  const drawerCloseBtn = document.getElementById("drawerCloseBtn");
 
-  /**
-   * Escape HTML to prevent XSS
-   */
+  const toolLogs = [];
+  const toolRegex = /\b(weather|news|stock|ticker|read file|run python|\/tool|nse|bse|nifty|sensex)\b/i;
+
+  const markedRenderer = (text) => marked.parse(escapeHtml(text), { breaks: true, gfm: true });
+
   function escapeHtml(text) {
-    const div = document.createElement('div');
+    const div = document.createElement("div");
     div.textContent = text;
     return div.innerHTML;
   }
 
-  /**
-   * Render markdown safely
-   */
-  function renderMarkdown(text) {
-    // First escape any raw HTML
-    const escaped = escapeHtml(text);
-    // Then parse markdown
-    return marked.parse(escaped);
-  }
-
-  /**
-   * Add a user message to the feed
-   */
-  function addUserMessage(text) {
-    const row = document.createElement("div");
-    row.className = "msg-row msg-row--user";
-
-    const bubble = document.createElement("div");
-    bubble.className = "bubble bubble--user";
-    bubble.textContent = text;
-
-    row.appendChild(bubble);
-    feed.appendChild(row);
-
+  function scrollToBottom() {
     feed.scrollTop = feed.scrollHeight;
   }
 
-  /**
-   * Add a typing indicator bubble
-   */
-  function addTypingIndicator() {
+  function updateSendState() {
+    sendBtn.disabled = input.value.trim() === "";
+  }
+
+  function setModelStatus(type, text) {
+    modelDot.classList.remove("status-dot--idle", "status-dot--active", "status-dot--error");
+    modelDot.classList.add(type === "error" ? "status-dot--error" : type === "active" ? "status-dot--active" : "status-dot--idle");
+    modelStatusText.textContent = text;
+  }
+
+  function addDevLog(message) {
+    if (!devLogToggle.checked) return;
+    const line = document.createElement("div");
+    const time = new Date().toLocaleTimeString();
+    line.textContent = `[${time}] ${message}`;
+    devLogPanel.appendChild(line);
+    devLogPanel.scrollTop = devLogPanel.scrollHeight;
+  }
+
+  function persistUiState() {
+    localStorage.setItem("localai_project", projectSelect.value);
+    localStorage.setItem("localai_mode", modeSelect.value);
+    localStorage.setItem("localai_memory", memoryToggle.checked ? "1" : "0");
+    localStorage.setItem("localai_devlogs", devLogToggle.checked ? "1" : "0");
+  }
+
+  function restoreUiState() {
+    const p = localStorage.getItem("localai_project");
+    const m = localStorage.getItem("localai_mode");
+    const mem = localStorage.getItem("localai_memory");
+    const logs = localStorage.getItem("localai_devlogs");
+
+    if (p && projectSelect.querySelector(`option[value="${p}"]`)) projectSelect.value = p;
+    if (m && modeSelect.querySelector(`option[value="${m}"]`)) modeSelect.value = m;
+    if (mem !== null) memoryToggle.checked = mem === "1";
+    if (logs !== null) devLogToggle.checked = logs === "1";
+    devLogPanel.classList.toggle("hidden", !devLogToggle.checked);
+  }
+
+  function runtimeOptions() {
+    return {
+      project: projectSelect.value,
+      memory_enabled: memoryToggle.checked,
+      dev_logs: devLogToggle.checked
+    };
+  }
+
+  function addMessage(text, role, options = {}) {
     const row = document.createElement("div");
-    row.className = "msg-row msg-row--ai";
-    row.id = "typing-indicator";
+    row.className = `msg-row msg-row--${role} fade-in`;
 
     const bubble = document.createElement("div");
-    bubble.className = "bubble bubble--ai typing-indicator";
-    bubble.innerHTML = '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
+    bubble.className = `bubble bubble--${role}`;
+    bubble.innerHTML = role === "ai" ? markedRenderer(text) : escapeHtml(text);
+
+    if (options.memoryUpdated) {
+      const note = document.createElement("div");
+      note.className = "memory-note";
+      note.textContent = "Memory updated";
+      bubble.appendChild(note);
+    }
+
+    if (options.toolStatus) {
+      const note = document.createElement("div");
+      note.className = "tool-status";
+      note.textContent = options.toolStatus;
+      bubble.appendChild(note);
+    }
 
     row.appendChild(bubble);
     feed.appendChild(row);
-
-    feed.scrollTop = feed.scrollHeight;
-    return row;
+    scrollToBottom();
+    return bubble;
   }
 
-  /**
-   * Remove typing indicator and return the row for replacement
-   */
-  function removeTypingIndicator() {
-    const indicator = document.getElementById("typing-indicator");
-    if (indicator) {
-      indicator.remove();
-    }
+  function appendTokenFooter(bubble, tokens) {
+    const footer = document.createElement("div");
+    footer.className = "token-footer";
+    footer.textContent = `Tokens: ${tokens.total_tokens} (Prompt: ${tokens.prompt_tokens}, Completion: ${tokens.completion_tokens})`;
+    bubble.appendChild(footer);
   }
 
-  /**
-   * Add an AI message bubble (with streaming support)
-   */
-  function addAiMessageStart() {
+  function createStreamingBubble() {
     const row = document.createElement("div");
-    row.className = "msg-row msg-row--ai";
-
+    row.className = "msg-row msg-row--ai fade-in";
     const bubble = document.createElement("div");
-    bubble.className = "bubble bubble--ai";
-    bubble.id = "current-ai-message";
-
+    bubble.className = "bubble bubble--ai streaming";
     row.appendChild(bubble);
     feed.appendChild(row);
-
-    feed.scrollTop = feed.scrollHeight;
-    return { row, bubble };
+    scrollToBottom();
+    return bubble;
   }
 
-  /**
-   * Append content to the current AI message
-   */
-  function appendToAiMessage(content) {
-    const bubble = document.getElementById("current-ai-message");
-    if (bubble) {
-      // Render markdown for the full content
-      bubble.innerHTML = renderMarkdown(content);
-      feed.scrollTop = feed.scrollHeight;
+  function looksLikeToolMessage(message) {
+    return toolRegex.test(message || "");
+  }
+
+  function logToolRun(message, elapsedMs, success) {
+    const entry = {
+      when: new Date().toLocaleTimeString(),
+      input: message,
+      elapsedMs,
+      success
+    };
+    toolLogs.unshift(entry);
+    if (toolLogs.length > 40) toolLogs.pop();
+    if (drawer.classList.contains("open") && drawerTitle.textContent === "Tool Logs") {
+      renderToolLogs();
     }
   }
 
-  /**
-   * Add token usage footer
-   */
-  function addTokenFooter(promptTokens, completionTokens, totalTokens) {
-    const bubble = document.getElementById("current-ai-message");
-    if (bubble) {
-      const footer = document.createElement("div");
-      footer.className = "token-footer";
-      footer.textContent = `Tokens: ${totalTokens} (Prompt: ${promptTokens}, Completion: ${completionTokens})`;
-      bubble.appendChild(footer);
+  function renderToolLogs() {
+    if (!toolLogs.length) {
+      drawerContent.innerHTML = `<div class="memory-card"><div class="memory-row">No tool logs yet.</div></div>`;
+      return;
+    }
+    drawerContent.innerHTML = toolLogs.map((item) => {
+      return `
+        <div class="memory-card">
+          <h4>${item.when}</h4>
+          <div class="memory-row"><strong>Input:</strong> ${escapeHtml(item.input)}</div>
+          <div class="memory-row"><strong>Status:</strong> ${item.success ? "completed" : "failed"}</div>
+          <div class="memory-row"><strong>Duration:</strong> ${item.elapsedMs} ms</div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  function normalizeMemoryData(data) {
+    if (!data || typeof data !== "object") return null;
+    if (data.user || data.preferences || data.system_state) return data;
+    if (data.content) {
+      try {
+        return JSON.parse(data.content);
+      } catch (_e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function extractToolPayload(text) {
+    const start = text.indexOf("{");
+    if (start < 0) return null;
+    const raw = text.slice(start);
+    try {
+      return JSON.parse(raw);
+    } catch (_e) {
+      return null;
     }
   }
 
-  /**
-   * Send message using streaming endpoint
-   */
+  async function fetchStructuredMemory() {
+    const response = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: "/tool read file structured_memory.json",
+        mode: modeSelect.value,
+        options: runtimeOptions()
+      })
+    });
+    const payload = await response.json();
+    if (!payload || !payload.response) return null;
+    const toolResult = extractToolPayload(payload.response);
+    if (!toolResult || !toolResult.ok) return null;
+    return normalizeMemoryData(toolResult);
+  }
+
+  function renderMemoryCards(memoryData) {
+    if (!memoryData) {
+      drawerContent.innerHTML = `<div class="memory-card"><div class="memory-row">Memory data unavailable.</div></div>`;
+      return;
+    }
+    const user = memoryData.user || {};
+    const prefs = memoryData.preferences || {};
+    const state = memoryData.system_state || {};
+    const difficulties = Array.isArray(state.difficulties) ? state.difficulties : [];
+
+    const prefRows = Object.keys(prefs).length
+      ? Object.entries(prefs).map(([k, v]) => `<div class="memory-row"><strong>${escapeHtml(k)}:</strong> ${escapeHtml(String(v))}</div>`).join("")
+      : `<div class="memory-row">No preferences saved.</div>`;
+
+    const diffRows = difficulties.length
+      ? difficulties.map((d) => `<div class="memory-row">• ${escapeHtml(String(d))}</div>`).join("")
+      : `<div class="memory-row">No difficulty subjects saved.</div>`;
+
+    drawerContent.innerHTML = `
+      <div class="memory-card">
+        <h4>User</h4>
+        <div class="memory-row"><strong>Name:</strong> ${escapeHtml(String(user.name || "Not set"))}</div>
+        <div class="memory-row"><strong>Birth Year:</strong> ${escapeHtml(String(user.birth_year || "Not set"))}</div>
+        <div class="memory-row"><strong>Age:</strong> ${escapeHtml(String(user.age || "Not set"))}</div>
+      </div>
+      <div class="memory-card">
+        <h4>Preferences</h4>
+        ${prefRows}
+      </div>
+      <div class="memory-card">
+        <h4>Difficulties</h4>
+        ${diffRows}
+      </div>
+    `;
+  }
+
+  async function openMemoryDrawer() {
+    drawer.classList.add("open");
+    drawerTitle.textContent = "Memory";
+    drawerContent.innerHTML = `<div class="memory-card"><div class="memory-row">Loading memory...</div></div>`;
+    try {
+      const memoryData = await fetchStructuredMemory();
+      renderMemoryCards(memoryData);
+    } catch (_err) {
+      drawerContent.innerHTML = `<div class="memory-card"><div class="memory-row">Failed to load memory snapshot.</div></div>`;
+    }
+  }
+
+  function openLogsDrawer() {
+    drawer.classList.add("open");
+    drawerTitle.textContent = "Tool Logs";
+    renderToolLogs();
+  }
+
   async function sendMessageStream() {
     const message = input.value.trim();
     if (!message) return;
 
-    sendBtn.disabled = true;
     input.value = "";
+    updateSendState();
+    setModelStatus("active", "Generating...");
+    addMessage(message, "user");
 
-    // Add user message
-    addUserMessage(message);
+    const mode = modeSelect.value;
+    const options = runtimeOptions();
+    const runTool = looksLikeToolMessage(message);
+    const start = Date.now();
+    let toolStatusBubble = null;
 
-    // Add typing indicator
-    const typingRow = addTypingIndicator();
+    if (runTool) {
+      toolStatusBubble = addMessage("Working...", "ai", { toolStatus: "Running tool..." });
+    }
+
+    const streamBubble = createStreamingBubble();
+    let fullText = "";
 
     try {
       const response = await fetch("/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message })
+        body: JSON.stringify({ message, mode, options })
       });
-
-      console.log("Stream Status:", response.status);
-
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
-      }
-
-      // Remove typing indicator and create AI message bubble
-      typingRow.remove();
-      const { bubble } = addAiMessageStart();
+      addDevLog(`stream status=${response.status}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let fullContent = "";
+      let doneTokens = null;
 
       while (true) {
         const { done, value } = await reader.read();
-        
         if (done) break;
-        
         const chunk = decoder.decode(value, { stream: true });
-        
-        // Parse SSE data
-        const lines = chunk.split('\n');
+        const lines = chunk.split("\n");
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            
-            // Check for error
-            if (data.startsWith('__ERROR__:')) {
-              const errorMsg = data.slice(10);
-              fullContent += '\n\n' + errorMsg;
-              bubble.innerHTML = renderMarkdown(fullContent);
-              continue;
-            }
-            
-            // Check for token info (final chunk)
-            if (data.startsWith('__TOKENS__:')) {
-              const tokenInfo = JSON.parse(data.slice(11));
-              console.log("Token info:", tokenInfo);
-              addTokenFooter(
-                tokenInfo.prompt_tokens,
-                tokenInfo.completion_tokens,
-                tokenInfo.total_tokens
-              );
-              continue;
-            }
-            
-            // Regular content chunk
-            if (data) {
-              fullContent += data;
-              bubble.innerHTML = renderMarkdown(fullContent);
-              feed.scrollTop = feed.scrollHeight;
-            }
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6);
+          if (!data) continue;
+          if (data.startsWith("__ERROR__:")) {
+            throw new Error(data.slice(10));
           }
+          if (data.startsWith("__TOKENS__:")) {
+            doneTokens = JSON.parse(data.slice(11));
+            continue;
+          }
+          fullText += data;
+          streamBubble.innerHTML = markedRenderer(fullText);
+          scrollToBottom();
         }
       }
 
-    } catch (error) {
-      console.error("Frontend Stream Error:", error);
-      typingRow.remove();
-      
-      const row = document.createElement("div");
-      row.className = "msg-row msg-row--ai";
-      
-      const bubble = document.createElement("div");
-      bubble.className = "bubble bubble--ai";
-      bubble.textContent = "Error connecting to server.";
-      
-      row.appendChild(bubble);
-      feed.appendChild(row);
+      streamBubble.classList.remove("streaming");
+      if (doneTokens) {
+        appendTokenFooter(streamBubble, doneTokens);
+        if (doneTokens.memory_updated) {
+          const mem = document.createElement("div");
+          mem.className = "memory-note";
+          mem.textContent = "Memory updated";
+          streamBubble.appendChild(mem);
+        }
+        if (doneTokens.runtime) {
+          addDevLog(`runtime ${JSON.stringify(doneTokens.runtime)}`);
+        }
+      }
+
+      if (runTool) {
+        const elapsed = Date.now() - start;
+        logToolRun(message, elapsed, true);
+        toolStatusBubble.querySelector(".tool-status").textContent = `Tool completed in ${elapsed} ms`;
+      }
+
+      setModelStatus("active", "Ready");
+    } catch (err) {
+      setModelStatus("error", "Error");
+      streamBubble.classList.remove("streaming");
+      streamBubble.innerHTML = markedRenderer(`Error: ${String(err)}`);
+      if (runTool && toolStatusBubble) {
+        const elapsed = Date.now() - start;
+        logToolRun(message, elapsed, false);
+        toolStatusBubble.querySelector(".tool-status").textContent = `Tool failed in ${elapsed} ms`;
+      }
+      addDevLog(`stream error=${String(err)}`);
     }
-
-    updateButtonState();
   }
 
-  /**
-   * Send message using regular fetch (fallback)
-   */
-  async function sendMessage() {
-    const message = input.value.trim();
-    if (!message) return;
-
-    sendBtn.disabled = true;
-
-    addUserMessage(message);
-    input.value = "";
-
-    try {
-      const response = await fetch("/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message })
-      });
-
-      console.log("Status:", response.status);
-
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
-      }
-
-      const rawText = await response.text();
-      console.log("Raw response:", rawText);
-
-      let data;
-
-      try {
-        data = JSON.parse(rawText);
-      } catch (parseError) {
-        console.error("JSON Parse Error:", parseError);
-        addMessage("Invalid JSON received from server.", "ai");
-        return;
-      }
-
-      console.log("Parsed JSON:", data);
-
-      if (!data.response) {
-        addMessage("No 'response' key found in backend reply.", "ai");
-        return;
-      }
-
-      addMessage(data.response, "ai");
-
-    } catch (error) {
-      console.error("Frontend Error:", error);
-      addMessage("Error connecting to server.", "ai");
-    }
-
-    updateButtonState();
-  }
-
-  function addMessage(text, role) {
-    const row = document.createElement("div");
-    row.className = `msg-row msg-row--${role}`;
-
-    const bubble = document.createElement("div");
-    bubble.className = `bubble bubble--${role}`;
-    bubble.textContent = text;
-
-    row.appendChild(bubble);
-    feed.appendChild(row);
-
-    feed.scrollTop = feed.scrollHeight;
-  }
-
-  input.addEventListener("input", updateButtonState);
+  input.addEventListener("input", () => {
+    updateSendState();
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 170)}px`;
+  });
 
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -299,6 +361,19 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   sendBtn.addEventListener("click", sendMessageStream);
+  projectSelect.addEventListener("change", persistUiState);
+  modeSelect.addEventListener("change", persistUiState);
+  memoryToggle.addEventListener("change", persistUiState);
+  devLogToggle.addEventListener("change", () => {
+    devLogPanel.classList.toggle("hidden", !devLogToggle.checked);
+    persistUiState();
+  });
 
+  memoryDrawerBtn.addEventListener("click", openMemoryDrawer);
+  logsDrawerBtn.addEventListener("click", openLogsDrawer);
+  drawerCloseBtn.addEventListener("click", () => drawer.classList.remove("open"));
+
+  restoreUiState();
+  updateSendState();
+  setModelStatus("idle", "Idle");
 });
-

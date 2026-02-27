@@ -1,43 +1,11 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>LocalAI</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-</head>
-<body>
+{% extends "base.html" %}
 
-  <div class="app">
+{% block title %}LocalAI{% endblock %}
 
-    <header class="header">
-      <span class="header__title">LocalAI</span>
-    </header>
-
-    <main id="feed" class="feed"></main>
-
-    <div class="composer-wrap">
-      <div class="composer">
-        <textarea
-          id="input"
-          class="composer__input"
-          placeholder="Message LocalAI…"
-          rows="1"
-        ></textarea>
-
-        <button id="sendBtn" class="composer__send" disabled>
-          ↑
-        </button>
-      </div>
-
-      <p class="composer__disclaimer">
-        LocalAI can make mistakes. Verify important information.
-      </p>
-    </div>
-
-  </div>
-
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
-</body>
-</html>
+{% block body %}
+<div class="app-shell">
+  {% include "partials/sidebar.html" %}
+  {% include "partials/chat.html" %}
+  {% include "partials/drawer.html" %}
+</div>
+{% endblock %}

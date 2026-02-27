@@ -57,6 +57,12 @@ class Config:
         
         # Token budget configuration
         self._token_budget_config = self._config.get('token_budget', {})
+
+        # Personality configuration
+        self._personality_config = self._config.get('personality', {})
+
+        # UI configuration
+        self._ui_config = self._config.get('ui', {})
     
     # ===================
     # Model Settings
@@ -71,6 +77,21 @@ class Config:
     def max_tokens(self) -> int:
         """Get max tokens from config."""
         return int(self._model_config.get('max_tokens', 2048))
+
+    @property
+    def model_context_window(self) -> int:
+        """Get model context window size."""
+        return int(self._model_config.get('context_window', 4096))
+
+    @property
+    def model_threading_enabled(self) -> bool:
+        """Get whether model thread control is enabled."""
+        return bool(self._model_config.get('threading', {}).get('enabled', True))
+
+    @property
+    def model_max_threads(self) -> int:
+        """Get model max thread count for local inference."""
+        return int(self._model_config.get('threading', {}).get('max_threads', 4))
     
     # ===================
     # Memory Settings
@@ -80,6 +101,11 @@ class Config:
     def short_term_max_messages(self) -> int:
         """Get short-term memory max messages."""
         return int(self._memory_config.get('short_term', {}).get('max_messages', 10))
+
+    @property
+    def short_term_max_tokens(self) -> int:
+        """Get short-term memory token cap."""
+        return int(self._memory_config.get('short_term', {}).get('max_tokens', 900))
     
     @property
     def short_term_enabled(self) -> bool:
@@ -135,7 +161,10 @@ class Config:
     def structured_file(self) -> str:
         """Get structured memory file path."""
         base_dir = os.path.dirname(os.path.dirname(__file__))
-        return self._memory_config.get('structured', {}).get('file', os.path.join(base_dir, 'structured_memory.json'))
+        configured = self._memory_config.get('structured', {}).get('file', os.path.join(base_dir, 'memory', 'long_term.json'))
+        if os.path.isabs(configured):
+            return configured
+        return os.path.join(base_dir, configured)
     
     @property
     def structured_auto_extract_profile(self) -> bool:
@@ -219,7 +248,7 @@ class Config:
     @property
     def max_context_tokens(self) -> int:
         """Get max context tokens from config."""
-        return int(self._token_budget_config.get('max_context_tokens', 32000))
+        return int(self._token_budget_config.get('max_context_tokens', self.model_context_window))
     
     @property
     def token_reserve_for_generation(self) -> int:
@@ -240,6 +269,30 @@ class Config:
     def modes(self) -> Dict:
         """Get all mode configurations."""
         return self._modes_config
+
+    # ===================
+    # Personality Settings
+    # ===================
+
+    @property
+    def personality_tone(self) -> str:
+        """Get personality tone identifier."""
+        return self._personality_config.get('tone', 'calm_controlled_witty')
+
+    @property
+    def personality_persistent_prompt(self) -> str:
+        """Get persistent personality prompt."""
+        return self._personality_config.get('persistent_prompt', '')
+
+    # ===================
+    # UI Settings
+    # ===================
+
+    @property
+    def ui_projects(self) -> list:
+        """Get list of UI project presets."""
+        projects = self._ui_config.get('projects', ['LocalAI'])
+        return projects if isinstance(projects, list) and projects else ['LocalAI']
     
     # ===================
     # General Settings
@@ -264,6 +317,9 @@ class Config:
 _config = Config()
 
 MODEL_NAME = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+MODEL_CONTEXT_WINDOW = _config.model_context_window
+MODEL_THREADING_ENABLED = _config.model_threading_enabled
+MODEL_MAX_THREADS = _config.model_max_threads
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
@@ -285,6 +341,7 @@ STUDY_KEYWORDS = [
 # Memory configurations (from Config class)
 SHORT_TERM_CONFIG = {
     'max_messages': _config.short_term_max_messages,
+    'max_tokens': _config.short_term_max_tokens,
     'enabled': _config.short_term_enabled
 }
 
@@ -343,9 +400,11 @@ TOKEN_BUDGET_CONFIG = {
 MAX_CONTEXT_TOKENS = _config.max_context_tokens
 TOKEN_RESERVE_FOR_GENERATION = _config.token_reserve_for_generation
 TOKEN_TRIMMING_ENABLED = _config.token_trimming_enabled
+PERSONALITY_TONE = _config.personality_tone
+PERSISTENT_PERSONALITY_PROMPT = _config.personality_persistent_prompt
+UI_PROJECTS = _config.ui_projects
 
 
 def get_mode_config(mode: str) -> dict:
     """Get mode configuration (legacy function)."""
     return _config.get_mode_config(mode)
-

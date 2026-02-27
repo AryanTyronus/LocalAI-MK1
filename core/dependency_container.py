@@ -30,6 +30,13 @@ from memory.memory_manager import MemoryManager
 from retrieval.document_manager import DocumentManager
 from services.ai_service import AIService
 from core.logger import logger
+from tools.python_executor import PythonExecutor
+from tools.file_reader import FileReader
+from tools.stock_fetcher import StockFetcher
+from tools.news_fetcher import NewsFetcher
+from tools.weather_fetcher import WeatherFetcher
+from tools.indian_market_fetcher import IndianMarketFetcher
+from tools.current_affairs_fetcher import CurrentAffairsFetcher
 
 
 class DependencyContainer:
@@ -99,28 +106,62 @@ class DependencyContainer:
     
     def _register_default_tools(self):
         """Register default tools for the application."""
-        
-        # Example safe tool: echo
-        def _echo(params):
-            return {'echo': params}
-        
+
+        python_executor = PythonExecutor(timeout_seconds=5, max_code_chars=2000)
+        file_reader = FileReader()
+        stock_fetcher = StockFetcher(timeout_seconds=5)
+        news_fetcher = NewsFetcher(timeout_seconds=6, max_items=5)
+        weather_fetcher = WeatherFetcher(timeout_seconds=6)
+        indian_market_fetcher = IndianMarketFetcher(timeout_seconds=6)
+        current_affairs_fetcher = CurrentAffairsFetcher(timeout_seconds=6)
+
         ToolRegistry.register_tool(
-            'echo', 
-            'Echo back parameters', 
-            {'type': 'object'}, 
-            _echo
+            'python_executor',
+            'Execute bounded Python snippets in a short-lived subprocess',
+            {'code': 'string'},
+            python_executor.execute
         )
-        
-        # Example system-level tool (requires confirmation by default)
-        def _open_app(params):
-            app = params.get('app_name')
-            return f"(simulated) opened {app}"
-        
+
         ToolRegistry.register_tool(
-            'open_app', 
-            'Open an application on the system (simulated)', 
-            {'app_name': 'string'}, 
-            _open_app
+            'file_reader',
+            'Read a text file from the current workspace',
+            {'filepath': 'string'},
+            file_reader.execute
+        )
+
+        ToolRegistry.register_tool(
+            'stock_fetcher',
+            'Fetch delayed stock quote for a ticker symbol',
+            {'symbol': 'string'},
+            stock_fetcher.execute
+        )
+
+        ToolRegistry.register_tool(
+            'news_fetcher',
+            'Fetch latest real-time news headlines by topic',
+            {'topic': 'string', 'limit': 'integer'},
+            news_fetcher.execute
+        )
+
+        ToolRegistry.register_tool(
+            'weather_fetcher',
+            'Fetch latest weather updates for a location',
+            {'location': 'string'},
+            weather_fetcher.execute
+        )
+
+        ToolRegistry.register_tool(
+            'indian_market_fetcher',
+            'Fetch Indian stock market overview and NSE/BSE stock details',
+            {'symbol': 'string'},
+            indian_market_fetcher.execute
+        )
+
+        ToolRegistry.register_tool(
+            'current_affairs_fetcher',
+            'Fetch live current-affairs facts',
+            {'query': 'string'},
+            current_affairs_fetcher.execute
         )
     
     def get_ai_service(self) -> AIService:
@@ -154,4 +195,3 @@ class DependencyContainer:
     def get_document_manager(self) -> DocumentManager:
         """Get the DocumentManager instance."""
         return self._document_manager
-

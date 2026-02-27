@@ -25,6 +25,11 @@ class ToolIntent(Enum):
     READ_FILE = "read_file"
     WRITE_FILE = "write_file"
     RUN_CODE = "run_code"
+    GET_STOCK = "get_stock"
+    GET_NEWS = "get_news"
+    GET_WEATHER = "get_weather"
+    GET_INDIAN_MARKET = "get_indian_market"
+    GET_CURRENT_AFFAIRS = "get_current_affairs"
     CUSTOM = "custom"
 
 
@@ -74,9 +79,36 @@ class ToolRouter:
             r'create\s+(?:a\s+)?file\s+(?:called\s+)?(.+)',
         ],
         ToolIntent.RUN_CODE: [
-            r'run\s+(?:the\s+)?code',
-            r'execute\s+(?:the\s+)?code',
-            r'run\s+(?:python|javascript|js)\s+code',
+            r'run\s+python\s*:?\s*(.+)',
+            r'execute\s+python\s*:?\s*(.+)',
+            r'python\s+code\s*:?\s*(.+)',
+        ],
+        ToolIntent.GET_STOCK: [
+            r'(?:stock\s+price\s+for|quote\s+for|price\s+for)\s+([A-Za-z.\-]{1,12})',
+            r'(?:stock|quote|price)\s+of\s+([A-Za-z.\-]{1,12})',
+            r'(?:stock|quote|price)\s+(?:for\s+)?([A-Za-z.\-]{1,12})',
+            r'ticker\s+([A-Za-z.\-]{1,12})',
+            r'\$([A-Za-z.\-]{1,12})',
+        ],
+        ToolIntent.GET_NEWS: [
+            r'(?:latest|today(?:\'s)?)\s+news(?:\s+on\s+(.+))?$',
+            r'news\s+(?:about|on)\s+(.+)',
+            r'headlines(?:\s+about\s+(.+))?$',
+        ],
+        ToolIntent.GET_WEATHER: [
+            r'(?:weather|temperature)\s+(?:in|at|for)\s+(.+)',
+            r'weather\s+update\s+(?:for|in)\s+(.+)',
+            r'how(?:\'s|\s+is)\s+the\s+weather\s+(?:in|at)\s+(.+)',
+        ],
+        ToolIntent.GET_INDIAN_MARKET: [
+            r'indian\s+stock\s+market(?:\s+today)?$',
+            r'(?:nse|bse|nifty|sensex)\s+(?:update|today|status)$',
+            r'(?:nse|bse)\s+stock\s+([A-Za-z0-9.\-]{1,20})',
+            r'(?:indian\s+stock|stock\s+india)\s+([A-Za-z0-9.\-]{1,20})',
+        ],
+        ToolIntent.GET_CURRENT_AFFAIRS: [
+            r'who\s+is\s+the\s+president\s+of\s+(?:america|the\s+united\s+states|usa)\??$',
+            r'president\s+of\s+(?:america|the\s+united\s+states|usa)\??$',
         ],
     }
     
@@ -104,8 +136,33 @@ class ToolRouter:
         },
         'run_code': {
             'description': 'Execute code',
-            'parameters': {'language': 'string', 'code': 'string'},
+            'parameters': {'code': 'string'},
             'requires_confirmation': True,
+        },
+        'stock_fetcher': {
+            'description': 'Fetch delayed stock quote',
+            'parameters': {'symbol': 'string'},
+            'requires_confirmation': False,
+        },
+        'news_fetcher': {
+            'description': 'Fetch latest real-time news headlines',
+            'parameters': {'topic': 'string', 'limit': 'integer'},
+            'requires_confirmation': False,
+        },
+        'weather_fetcher': {
+            'description': 'Fetch latest weather for a location',
+            'parameters': {'location': 'string'},
+            'requires_confirmation': False,
+        },
+        'indian_market_fetcher': {
+            'description': 'Fetch Indian stock market overview and NSE/BSE quotes',
+            'parameters': {'symbol': 'string'},
+            'requires_confirmation': False,
+        },
+        'current_affairs_fetcher': {
+            'description': 'Fetch live current-affairs facts from trusted sources',
+            'parameters': {'query': 'string'},
+            'requires_confirmation': False,
         },
     }
     
@@ -147,13 +204,27 @@ class ToolRouter:
                 confidence=0.0,
                 requires_confirmation=False
             )
-        
-        message_lower = message.lower()
-        
+
+        lowered = (message or "").strip().lower()
+
+        # Prioritize Indian market routing before generic stock patterns.
+        if any(k in lowered for k in ("indian stock market", "nifty", "sensex", "nse", "bse", "stock india")):
+            symbol_match = re.search(r"\b(?:stock|share)\s+(?:of\s+)?([A-Za-z0-9.\-]{1,20})\b", message, flags=re.IGNORECASE)
+            symbol = symbol_match.group(1).strip().upper() if symbol_match else ""
+            if symbol in {"MARKET", "TODAY", "UPDATE", "STATUS"}:
+                symbol = ""
+            return ToolCall(
+                intent=ToolIntent.GET_INDIAN_MARKET,
+                tool_name="indian_market_fetcher",
+                parameters={"symbol": symbol},
+                confidence=0.9,
+                requires_confirmation=False
+            )
+
         # Check each intent pattern
         for intent, patterns in self.INTENT_PATTERNS.items():
             for pattern in patterns:
-                match = re.search(pattern, message_lower)
+                match = re.search(pattern, message, flags=re.IGNORECASE)
                 if match:
                     # Extract parameters from match
                     params = self._extract_parameters(intent, match)
@@ -195,6 +266,34 @@ class ToolRouter:
             if match.group(1):
                 params['filepath'] = match.group(1).strip()
         
+        elif intent == ToolIntent.RUN_CODE:
+            if match.group(1):
+                params['code'] = match.group(1).strip()
+        
+        elif intent == ToolIntent.GET_STOCK:
+            if match.group(1):
+                params['symbol'] = match.group(1).strip().upper()
+        
+        elif intent == ToolIntent.GET_NEWS:
+            topic = ""
+            if match.lastindex and match.group(1):
+                topic = match.group(1).strip()
+            params['topic'] = topic
+            params['limit'] = 5
+
+        elif intent == ToolIntent.GET_WEATHER:
+            if match.group(1):
+                params['location'] = match.group(1).strip()
+
+        elif intent == ToolIntent.GET_INDIAN_MARKET:
+            symbol = ""
+            if match.lastindex and match.group(1):
+                symbol = match.group(1).strip().upper()
+            params['symbol'] = symbol
+
+        elif intent == ToolIntent.GET_CURRENT_AFFAIRS:
+            params['query'] = match.group(0).strip()
+        
         return params
     
     def _intent_to_tool_name(self, intent: ToolIntent) -> str:
@@ -202,9 +301,14 @@ class ToolRouter:
         mapping = {
             ToolIntent.OPEN_APP: "open_app",
             ToolIntent.SEARCH_WEB: "search_web",
-            ToolIntent.READ_FILE: "read_file",
+            ToolIntent.READ_FILE: "file_reader",
             ToolIntent.WRITE_FILE: "write_file",
-            ToolIntent.RUN_CODE: "run_code",
+            ToolIntent.RUN_CODE: "python_executor",
+            ToolIntent.GET_STOCK: "stock_fetcher",
+            ToolIntent.GET_NEWS: "news_fetcher",
+            ToolIntent.GET_WEATHER: "weather_fetcher",
+            ToolIntent.GET_INDIAN_MARKET: "indian_market_fetcher",
+            ToolIntent.GET_CURRENT_AFFAIRS: "current_affairs_fetcher",
         }
         return mapping.get(intent, "")
     
@@ -332,4 +436,3 @@ def get_tool_router() -> ToolRouter:
     if _tool_router is None:
         _tool_router = ToolRouter()
     return _tool_router
-

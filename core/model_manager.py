@@ -6,11 +6,14 @@ Supports streaming generation stub for future implementation.
 import os
 from typing import Generator
 import numpy as np
-from sentence_transformers import SentenceTransformer
-from mlx_lm import generate as mlx_generate
-from core.config import MODEL_NAME
+from core.config import (
+    MODEL_NAME,
+    MODEL_MAX_THREADS,
+    MODEL_THREADING_ENABLED,
+)
 from core.logger import logger
 from core.chat_formatter import ChatFormatter, Message, Role, ModelType
+from models.llm_loader import LLMLoader
 
 
 class FakeModelManager:
@@ -77,12 +80,14 @@ class ModelManager:
 
     def __init__(self):
         logger.info("Loading MLX model...")
-        # Real model loading path
-        from mlx_lm import load
-        self.model, self.tokenizer = load(MODEL_NAME)
-
-        logger.info("Loading embedding model...")
-        self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        self._loader = LLMLoader(
+            model_name=MODEL_NAME,
+            max_threads=MODEL_MAX_THREADS,
+            enable_thread_control=MODEL_THREADING_ENABLED
+        )
+        self.model, self.tokenizer = self._loader.load_model()
+        self._loader.set_idle_mode()
+        self.embedder = None
 
         # Initialize chat formatter for Qwen2.5
         # Detect model type from MODEL_NAME
@@ -101,6 +106,14 @@ class ModelManager:
                 cls._instance = ModelManager()
         return cls._instance
 
+    def warm_up(self) -> None:
+        """
+        Keep model loaded and ready without running generation loops.
+        """
+        # Keep lightweight and avoid eager embedding load.
+        self._loader.set_idle_mode()
+        logger.info("Model warm-up complete (model loaded and idle)")
+
     def generate(self, prompt, max_tokens=300, temperature: float = 0.7):
         """
         Generate response from model given a prompt.
@@ -112,14 +125,16 @@ class ModelManager:
         Returns:
             Generated text response
         """
-        # Pass temperature if supported by underlying generate implementation
-        # Note: mlx_lm.generate does not support temperature parameter
-        output = mlx_generate(
-            self.model,
-            self.tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-        )
+        self._loader.set_active_mode()
+        try:
+            output = self._loader.generate(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                prompt=prompt,
+                max_tokens=max_tokens,
+            )
+        finally:
+            self._loader.set_idle_mode()
 
         # Extract clean response
         return self.chat_formatter.extract_response(output)
@@ -192,5 +207,8 @@ class ModelManager:
         return self.chat_formatter.format_prompt(messages)
 
     def embed(self, texts):
+        if self.embedder is None:
+            logger.info("Loading embedding model (lazy)...")
+            from sentence_transformers import SentenceTransformer
+            self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
         return self.embedder.encode(texts)
-

@@ -1,709 +1,474 @@
 """
-4-Layer Memory Architecture Manager
+3-Layer Memory Manager (Phase 2).
 
-Coordinates four memory layers:
-1. Short-term memory (active conversation)
-2. Rolling summary memory (compressed history)
-3. Semantic memory (vector-indexed facts)
-4. Structured persistent memory (user profile)
-
-Features:
-- Memory scoring with weighted priorities
-- Semantic deduplication on insertion
-- Context compression for token budget
+Layers:
+1) Short-term memory (token-aware in-memory buffer)
+2) Long-term structured memory (JSON with importance-scored entries)
+3) Vector memory (project-namespaced, lazy FAISS lifecycle)
 """
 
-import json
+from __future__ import annotations
+
 import os
+import re
+import json
+import threading
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from collections import deque
 
 from core.config import (
-    MEMORY_FILE,
     SHORT_TERM_CONFIG,
-    ROLLING_SUMMARY_CONFIG,
     SEMANTIC_CONFIG,
-    STRUCTURED_CONFIG,
-    INCLUDE_SUMMARIES_IN_SEARCH,
+    DEFAULT_TOP_K,
     INCLUDE_SEMANTIC_IN_SEARCH,
-    DEFAULT_TOP_K
+    MEMORY_FILE,
+    BASE_DIR,
 )
 from core.logger import logger
 from core.model_manager import ModelManager
-from memory.summarizer import ConversationSummarizer
-from memory.semantic_memory import SemanticMemory
+from memory.long_term_memory import LongTermMemory
+from memory.vector_memory import VectorMemory
+
+
+def _project_namespace() -> str:
+    cwd = os.getcwd()
+    return os.path.basename(cwd) or "default"
 
 
 class MemoryManager:
     """
-    Unified memory manager coordinating all 4 memory layers.
-    Provides a clean interface for the rest of the application.
+    Unified memory manager with reactive, explicit persistence.
     """
 
     def __init__(self):
-        """Initialize the 4-layer memory system."""
+        self._lock = threading.RLock()
         self.model_manager = ModelManager.get_instance()
 
-        # Layer 1: Short-term memory
-        self.short_term_max = SHORT_TERM_CONFIG.get('max_messages', 10)
+        # Layer 1: short-term buffer
+        self.short_term_max = int(SHORT_TERM_CONFIG.get("max_messages", 10))
+        self.short_term_max_tokens = int(SHORT_TERM_CONFIG.get("max_tokens", 900))
         self.short_term = deque(maxlen=self.short_term_max)
 
-        # Layer 2: Rolling summary memory
-        self.rolling_summaries = []
-        self.summary_trigger = ROLLING_SUMMARY_CONFIG.get('trigger_threshold', 15)
-        self.summarizer = ConversationSummarizer()
+        # Keep compatibility with existing callers/tests.
+        self.rolling_summaries: List[Dict[str, Any]] = []
+        self.summary_trigger = 10**9  # disabled rolling summary for 3-layer design
 
-        # Layer 3: Semantic memory (vector-indexed)
-        self.semantic = SemanticMemory(self.model_manager)
-        logger.debug(f"Semantic memory initialized: {self.semantic.get_info()}")
+        # Layer 2: long-term structured
+        long_term_path = MEMORY_FILE
+        self.long_term = LongTermMemory(filepath=long_term_path, max_entries=700)
+        self._maybe_migrate_legacy_structured(long_term_path)
 
-        # Layer 4: Structured persistent memory
-        self.structured = StructuredMemory(MEMORY_FILE)
-        logger.debug(f"Structured memory loaded: {len(self.structured.get_all())} keys")
+        # Layer 3: vector memory (project namespaced, lazy)
+        namespace = _project_namespace()
+        self.semantic = VectorMemory(
+            model_manager=self.model_manager,
+            base_dir=BASE_DIR,
+            namespace=namespace,
+            max_entries=SEMANTIC_CONFIG.get("max_entries", 2000),
+        )
 
-        logger.info("4-Layer Memory Manager initialized")
+        logger.info(f"3-Layer MemoryManager initialized (namespace={namespace})")
+
+    def _maybe_migrate_legacy_structured(self, long_term_path: str) -> None:
+        """
+        One-time migration from legacy structured_memory.json if new file doesn't exist yet.
+        """
+        if os.path.exists(long_term_path):
+            return
+        legacy_path = os.path.join(BASE_DIR, "structured_memory.json")
+        if not os.path.exists(legacy_path):
+            return
+        try:
+            import json
+            with open(legacy_path, "r", encoding="utf-8") as f:
+                legacy = json.load(f)
+            if isinstance(legacy, dict):
+                self.long_term.data.update({k: v for k, v in legacy.items() if k in ("user", "preferences", "goals", "system_state")})
+                self.long_term.save()
+                logger.info(f"Migrated legacy structured memory from {legacy_path}")
+        except Exception as exc:
+            logger.warning(f"Legacy structured memory migration skipped: {exc}")
 
     # ================================================
-    # LAYER 1: SHORT-TERM MEMORY (Active window)
+    # Layer 1: Short-term memory
     # ================================================
+
+    def _estimate_tokens(self, text: str) -> int:
+        try:
+            return max(1, int(self.model_manager.estimate_tokens(text)))
+        except Exception:
+            return max(1, int(len(text) / 4))
+
+    def _short_term_tokens(self) -> int:
+        return sum(self._estimate_tokens(m.get("content", "")) for m in self.short_term)
+
+    def _truncate_short_term_by_tokens(self) -> None:
+        while self.short_term and self._short_term_tokens() > self.short_term_max_tokens:
+            self.short_term.popleft()
 
     def add_short_term_message(self, role: str, content: str) -> None:
-        """
-        Add a message to short-term memory.
-        Automatically discards oldest when limit reached.
-
-        Args:
-            role: 'user' or 'assistant'
-            content: Message content
-        """
-        self.short_term.append({
-            'role': role,
-            'content': content,
-            'timestamp': datetime.now().isoformat()
-        })
-        logger.debug(f"Added {role} message to short-term (total: {len(self.short_term)})")
+        with self._lock:
+            self.short_term.append(
+                {
+                    "role": role,
+                    "content": content,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
+            self._truncate_short_term_by_tokens()
 
     def get_short_term_context(self) -> str:
-        """
-        Get formatted short-term memory for prompt inclusion.
-
-        Returns:
-            Formatted conversation context
-        """
-        if not self.short_term:
-            return ""
-
-        lines = []
-        for msg in self.short_term:
-            role = msg['role'].capitalize()
-            lines.append(f"{role}: {msg['content']}")
-
-        return "\n".join(lines)
+        with self._lock:
+            if not self.short_term:
+                return ""
+            lines = [f"{m['role'].capitalize()}: {m['content']}" for m in self.short_term]
+            return "\n".join(lines)
 
     def get_short_term_messages(self) -> List[Dict]:
-        """Get raw short-term messages."""
-        return list(self.short_term)
+        with self._lock:
+            return list(self.short_term)
 
-    # ================================================
-    # LAYER 2: ROLLING SUMMARY MEMORY (Compressed history)
-    # ================================================
+    def clear_short_term(self) -> None:
+        with self._lock:
+            self.short_term.clear()
 
     def maybe_create_summary(self) -> bool:
         """
-        Check if we should create a rolling summary.
-        Triggered when total messages exceed threshold.
-
-        Returns:
-            True if summary was created
+        Rolling summaries are intentionally disabled in 3-layer architecture.
         """
-        total_messages = len(self.short_term)
-
-        if total_messages >= self.summary_trigger:
-            self._create_rolling_summary()
-            return True
-
         return False
 
-    def _create_rolling_summary(self) -> None:
-        """Create a summary from short-term memory and add to rolling memory."""
-        if not self.short_term:
-            return
-
-        messages = list(self.short_term)
-
-        # Generate summary
-        summary = self.summarizer.summarize_messages(messages)
-        self.rolling_summaries.append(summary)
-
-        # Keep only recent summaries
-        max_summaries = ROLLING_SUMMARY_CONFIG.get('summary_size', 3)
-        if len(self.rolling_summaries) > max_summaries:
-            self.rolling_summaries = self.rolling_summaries[-max_summaries:]
-
-        logger.info(f"Created rolling summary from {len(messages)} messages")
-
     def get_rolling_summary_context(self) -> str:
-        """
-        Get formatted rolling summary memory for prompt inclusion.
-
-        Returns:
-            Formatted summary context
-        """
-        if not self.rolling_summaries:
-            return ""
-
-        lines = ["=== Conversation History Summary ==="]
-        for i, summary in enumerate(self.rolling_summaries[-2:], 1):  # Last 2 summaries
-            lines.append(f"\nSummary {i}: {summary['summary_text']}")
-
-        return "\n".join(lines)
+        return ""
 
     # ================================================
-    # LAYER 3: SEMANTIC MEMORY (Vector-indexed facts)
+    # Layer 2: Long-term structured memory
+    # ================================================
+
+    def update_structured_memory(self, key: str, value: Any) -> None:
+        self.long_term.set(key, value)
+
+    def get_structured_memory(self, key: str = None) -> Any:
+        if key is None:
+            return self.long_term.get_all()
+        return self.long_term.get(key)
+
+    def _entry_importance(self, text: str) -> float:
+        text_l = text.lower()
+        score = 0.3
+        if any(k in text_l for k in ("my name is", "born in", "my goal", "remember", "important", "deadline")):
+            score += 0.4
+        if any(k in text_l for k in ("prefer", "struggle", "love", "hate")):
+            score += 0.2
+        return min(1.0, score)
+
+    def extract_profile_facts(self, message: str) -> bool:
+        msg = message.lower()
+        extracted_any = False
+
+        name_match = re.search(
+            r"\bmy name is\s+([A-Za-z][A-Za-z\s'\-]{0,60}?)(?:[.,!?]|$|\s+and\s+i\b)",
+            message,
+            flags=re.IGNORECASE,
+        )
+        if name_match:
+            name = self._normalize_name(name_match.group(1))
+            if name:
+                self.update_structured_memory("user.name", name)
+                extracted_any = True
+
+        age_match = re.search(r"i(?:'m| am)?\s+(\d+)\s+years?\s+old", msg)
+        if age_match:
+            self.update_structured_memory("user.age", int(age_match.group(1)))
+            extracted_any = True
+
+        year_match = re.search(r"born in\s+(\d{4})", msg)
+        if year_match:
+            self.update_structured_memory("user.birth_year", int(year_match.group(1)))
+            extracted_any = True
+
+        color_match = re.search(r"my favorite colou?r is\s+(.+?)(?:\.|,|$)", msg)
+        if color_match:
+            self.update_structured_memory("preferences.favorite_color", color_match.group(1).strip())
+            extracted_any = True
+
+        prefer_match = re.search(r"i prefer\s+(.+?)(?:\.|,|$)", msg)
+        if prefer_match:
+            self.update_structured_memory("preferences.general_preference", prefer_match.group(1).strip())
+            extracted_any = True
+
+        like_match = re.search(r"i like\s+(.+?)(?:\.|,|$)", msg)
+        if like_match:
+            thing = like_match.group(1).strip()
+            interests = self.get_structured_memory("preferences.interests") or []
+            if isinstance(interests, list) and thing not in interests:
+                interests.append(thing)
+                self.update_structured_memory("preferences.interests", interests)
+                extracted_any = True
+
+        # Difficulty extraction
+        struggle_match = re.search(
+            r"\b(?:i(?:'m| am)?\s+(?:struggle|struggling|have trouble|have difficulties|have difficulty)\s+(?:in|with)\s+(.+?))(?:[.!?]|$)",
+            msg
+        )
+        if struggle_match:
+            subject_block = struggle_match.group(1).strip()
+            difficulties = self.get_structured_memory("system_state.difficulties") or []
+            for subject in self._split_subjects(subject_block):
+                if isinstance(difficulties, list) and subject not in difficulties:
+                    difficulties.append(subject)
+            self.update_structured_memory("system_state.difficulties", difficulties)
+            extracted_any = True
+
+        find_diff_match = re.search(r"i find\s+(.+?)\s+difficult(?:[.!?]|$)", msg)
+        if find_diff_match:
+            subject_block = find_diff_match.group(1).strip()
+            difficulties = self.get_structured_memory("system_state.difficulties") or []
+            for subject in self._split_subjects(subject_block):
+                if isinstance(difficulties, list) and subject not in difficulties:
+                    difficulties.append(subject)
+            self.update_structured_memory("system_state.difficulties", difficulties)
+            extracted_any = True
+
+        difficult_for_me_match = re.search(r"\b(.+?)\s+(?:is|are)\s+difficult(?:\s+for\s+me)?(?:[.!?]|$)", msg)
+        if difficult_for_me_match:
+            subject_block = difficult_for_me_match.group(1).strip()
+            difficulties = self.get_structured_memory("system_state.difficulties") or []
+            for subject in self._split_subjects(subject_block):
+                if isinstance(difficulties, list) and subject not in difficulties:
+                    difficulties.append(subject)
+            self.update_structured_memory("system_state.difficulties", difficulties)
+            extracted_any = True
+
+        weak_in_match = re.search(r"\bi(?:'m| am)?\s+weak\s+(?:in|with)\s+(.+?)(?:[.!?]|$)", msg)
+        if weak_in_match:
+            subject_block = weak_in_match.group(1).strip()
+            difficulties = self.get_structured_memory("system_state.difficulties") or []
+            for subject in self._split_subjects(subject_block):
+                if isinstance(difficulties, list) and subject not in difficulties:
+                    difficulties.append(subject)
+            self.update_structured_memory("system_state.difficulties", difficulties)
+            extracted_any = True
+
+        weak_subjects_match = re.search(r"\bmy\s+weak\s+subjects?\s+(?:are|is)\s+(.+?)(?:[.!?]|$)", msg)
+        if weak_subjects_match:
+            subject_block = weak_subjects_match.group(1).strip()
+            difficulties = self.get_structured_memory("system_state.difficulties") or []
+            for subject in self._split_subjects(subject_block):
+                if isinstance(difficulties, list) and subject not in difficulties:
+                    difficulties.append(subject)
+            self.update_structured_memory("system_state.difficulties", difficulties)
+            extracted_any = True
+
+        if any(k in msg for k in ("my goal", "i want to", "i am preparing")):
+            self.long_term.add_entry(message, metadata={"source": "profile_extraction"}, importance=self._entry_importance(message))
+            extracted_any = True
+
+        if extracted_any or self._looks_important_statement(message):
+            self._add_long_term_fact(message)
+            extracted_any = True
+
+        return extracted_any
+
+    def _format_structured_context(self) -> str:
+        structured = self.get_structured_memory()
+        if not isinstance(structured, dict):
+            return ""
+
+        lines = ["=== User Profile ==="]
+        user = structured.get("user", {})
+        prefs = structured.get("preferences", {})
+        goals = structured.get("goals", [])
+        system_state = structured.get("system_state", {})
+
+        if user.get("name"):
+            lines.append(f"Name: {user['name']}")
+        if user.get("age"):
+            lines.append(f"Age: {user['age']}")
+        if user.get("birth_year"):
+            lines.append(f"Birth Year: {user['birth_year']}")
+
+        if prefs:
+            lines.append("Preferences:")
+            for k, v in prefs.items():
+                lines.append(f"- {k}: {v}")
+
+        if goals:
+            lines.append("Goals:")
+            for g in goals[:5]:
+                lines.append(f"- {g}")
+
+        if system_state:
+            lines.append("System State:")
+            difficulties = system_state.get("difficulties")
+            if isinstance(difficulties, list) and difficulties:
+                lines.append("- difficulties: " + ", ".join(str(x) for x in difficulties))
+            for k, v in system_state.items():
+                if k == "difficulties":
+                    continue
+                lines.append(f"- {k}: {v}")
+
+        # Add only top important long-term entries (avoid dumping full history)
+        top_entries = self.long_term.top_entries(limit=4)
+        if top_entries:
+            lines.append("Important Long-Term Notes:")
+            for entry in top_entries:
+                lines.append(f"- {entry.get('text', '')}")
+
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    def _split_subjects(self, subject_block: str) -> List[str]:
+        """
+        Split difficulty/preference subject blocks into normalized items.
+        Example: 'organic chemistry and thermodynamics' -> ['organic chemistry', 'thermodynamics']
+        """
+        if not subject_block:
+            return []
+        cleaned = subject_block.strip().strip(".")
+        parts = re.split(r"\s*,\s*|\s+and\s+", cleaned)
+        normalized = []
+        for p in parts:
+            item = p.strip().strip(".")
+            if item and item not in normalized:
+                normalized.append(item)
+        return normalized
+
+    def _normalize_name(self, raw: str) -> str:
+        if not raw:
+            return ""
+        candidate = raw.strip().strip(".,!?")
+        candidate = re.split(
+            r"\b(?:i am|i'm|i like|i prefer|and i|because|but)\b",
+            candidate,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip().strip(".,!?")
+        return candidate
+
+    def _looks_important_statement(self, text: str) -> bool:
+        lowered = (text or "").strip().lower()
+        if not lowered or lowered.endswith("?"):
+            return False
+        cues = (
+            "remember",
+            "important",
+            "my ",
+            "i am ",
+            "i'm ",
+            "i have ",
+            "i struggle",
+            "i find",
+            "i prefer",
+            "i like",
+            "i want",
+            "my goal",
+        )
+        return any(c in lowered for c in cues)
+
+    def _add_long_term_fact(self, text: str) -> None:
+        normalized = (text or "").strip()
+        if not normalized:
+            return
+        try:
+            entries = self.long_term.get("entries") or []
+            if isinstance(entries, list):
+                recent = entries[-20:]
+                for entry in recent:
+                    if (entry or {}).get("text", "").strip().lower() == normalized.lower():
+                        return
+            self.long_term.add_entry(
+                normalized,
+                metadata={"source": "fact_capture"},
+                importance=self._entry_importance(normalized),
+            )
+        except Exception as exc:
+            logger.warning(f"Long-term fact capture failed: {exc}")
+
+    # ================================================
+    # Layer 3: Vector memory
     # ================================================
 
     def add_semantic_memory(self, text: str, metadata: Dict = None) -> None:
-        """
-        Add important fact to semantic memory with embeddings.
-
-        Args:
-            text: The memory text
-            metadata: Optional metadata (source, type, etc.)
-        """
-        self.semantic.add_memory(text, metadata)
-        logger.debug(f"Added to semantic memory: {text[:50]}...")
+        importance = self._entry_importance(text)
+        ok = self.semantic.add_memory(text, metadata=metadata or {}, importance=importance)
+        if not ok:
+            logger.warning("Vector memory add failed; storing in long-term fallback")
+            self.long_term.add_entry(text, metadata={"source": "vector_fallback"}, importance=importance)
 
     def search_semantic_memory(self, query: str, top_k: int = None) -> List[str]:
-        """
-        Search semantic memory for relevant facts using weighted scoring.
-
-        Args:
-            query: Search query
-            top_k: Number of results to return
-
-        Returns:
-            List of relevant memory entries sorted by weighted score
-        """
-        if not SEMANTIC_CONFIG.get('enabled', True):
+        if not SEMANTIC_CONFIG.get("enabled", True):
+            return []
+        k = int(top_k or DEFAULT_TOP_K)
+        try:
+            results = self.semantic.search(query, top_k=k)
+            return [text for text, _score in results[:k]]
+        except Exception as exc:
+            logger.error(f"Vector search failed: {exc}")
             return []
 
-        top_k = top_k or DEFAULT_TOP_K
-        
-        # Use weighted scoring search (Phase 3)
-        scored_results = self.semantic.search_with_scoring(query, k=top_k)
-        
-        # Return just the text, sorted by score
-        return [text for text, score, _ in scored_results]
-
     def get_semantic_context(self, query: str) -> str:
-        """
-        Get formatted semantic memory context for a query.
-
-        Args:
-            query: Current user query
-
-        Returns:
-            Formatted semantic memory results
-        """
         if not INCLUDE_SEMANTIC_IN_SEARCH:
             return ""
-
         results = self.search_semantic_memory(query)
-
         if not results:
             return ""
-
-        return "=== Relevant Memories ===\n" + "\n".join(f"- {r}" for r in results)
-
-    # ================================================
-    # LAYER 4: STRUCTURED MEMORY (User profile/state)
-    # ================================================
-
-    def update_structured_memory(self, key: str, value: any) -> None:
-        """
-        Update a value in structured memory.
-
-        Args:
-            key: Memory key (e.g., 'user.name', 'user.age')
-            value: Value to store
-        """
-        self.structured.set(key, value)
-
-    def get_structured_memory(self, key: str = None) -> any:
-        """
-        Retrieve structured memory value.
-
-        Args:
-            key: Memory key (or None to get all)
-
-        Returns:
-            Memory value or entire memory dict
-        """
-        if key is None:
-            return self.structured.get_all()
-        return self.structured.get(key)
-
-    def extract_profile_facts(self, message: str) -> None:
-        """
-        Auto-extract user profile information from message.
-        Looks for patterns like "my name is X", "I'm Y years old", "my favorite color is X", etc.
-
-        Args:
-            message: User message to parse
-        """
-        message_lower = message.lower()
-        import re
-        
-        logger.debug(f"[EXTRACT] Processing: {message[:100]}")
-
-        # Name extraction
-        if "my name is" in message_lower:
-            name = message.split("my name is")[-1].split(".")[0].strip()
-            logger.debug(f"[EXTRACT] Found name: {name}")
-            self.update_structured_memory("user.name", name)
-
-        # Age extraction
-        age_match = re.search(r"i'm?\s+(\d+)\s+years? old", message_lower)
-        if age_match:
-            age = int(age_match.group(1))
-            logger.debug(f"[EXTRACT] Found age: {age}")
-            self.update_structured_memory("user.age", age)
-
-        # Birth year extraction
-        year_match = re.search(r"born in?\s+(\d{4})", message_lower)
-        if year_match:
-            year = int(year_match.group(1))
-            logger.debug(f"[EXTRACT] Found birth year: {year}")
-            self.update_structured_memory("user.birth_year", year)
-        
-        # ================================================
-        # PREFERENCE EXTRACTION
-        # ================================================
-        
-        # Favorite color extraction
-        color_match = re.search(r"my favorite colou?r is\s+(.+?)(?:\.|,|$)", message_lower)
-        if color_match:
-            color = color_match.group(1).strip()
-            logger.debug(f"[EXTRACT] Found favorite color: {color}")
-            self.update_structured_memory("preferences.favorite_color", color)
-        else:
-            logger.debug(f"[EXTRACT] Color pattern NO MATCH on: {message_lower}")
-        
-        # Generic favorite [thing] extraction
-        favorite_match = re.search(r"my favorite\s+(\w+)\s+is\s+(.+?)(?:\.|,|$)", message_lower)
-        if favorite_match:
-            thing_type = favorite_match.group(1).strip()
-            thing_value = favorite_match.group(2).strip()
-            logger.debug(f"[EXTRACT] Found favorite {thing_type}: {thing_value}")
-            self.update_structured_memory(f"preferences.favorite_{thing_type}", thing_value)
-        
-        # Preference extraction: "I prefer..."
-        prefer_match = re.search(r"i prefer\s+(.+?)(?:\.|,|$)", message_lower)
-        if prefer_match:
-            preference = prefer_match.group(1).strip()
-            logger.debug(f"[EXTRACT] Found preference: {preference}")
-            # Store as a preference (could be extended to track multiple)
-            self.update_structured_memory("preferences.general_preference", preference)
-        
-        # "I like" extraction (for preferences)
-        like_match = re.search(r"i like\s+(.+?)(?:\.|,|$)", message_lower)
-        if like_match:
-            thing = like_match.group(1).strip()
-            logger.debug(f"[EXTRACT] Found like: {thing}")
-            # Store interests/likes
-            interests = self.get_structured_memory("preferences.interests") or []
-            if isinstance(interests, list):
-                if thing not in interests:
-                    interests.append(thing)
-                self.update_structured_memory("preferences.interests", interests)
-
-        # Struggle/difficulty extraction: "I struggle with X", "I'm struggling in X", "I have trouble with X", "I find X difficult"
-        # Accept variations: "I struggle", "I'm struggling", "I am struggling", "I have trouble"
-        struggle_match = re.search(r"\b(?:i(?:'m| am)?\s+(?:struggle|struggling|have trouble)\s+(?:in|with)\s+(.+?))(?:\.|,|$)", message_lower)
-        if struggle_match:
-            subject = struggle_match.group(1).strip()
-            logger.debug(f"[EXTRACT] Found struggle/difficulty: {subject}")
-            difficulties = self.get_structured_memory("system_state.difficulties") or []
-            if isinstance(difficulties, list):
-                if subject not in difficulties:
-                    difficulties.append(subject)
-                self.update_structured_memory("system_state.difficulties", difficulties)
-
-        # Alternate phrasing: "I find X difficult"
-        find_diff_match = re.search(r"i find\s+(.+?)\s+difficult(?:\.|,|$)", message_lower)
-        if find_diff_match:
-            subject = find_diff_match.group(1).strip()
-            logger.debug(f"[EXTRACT] Found 'find difficult' match: {subject}")
-            difficulties = self.get_structured_memory("system_state.difficulties") or []
-            if isinstance(difficulties, list):
-                if subject not in difficulties:
-                    difficulties.append(subject)
-                self.update_structured_memory("system_state.difficulties", difficulties)
+        return "=== Relevant Memories ===\n" + "\n".join(f"- {x}" for x in results)
 
     # ================================================
-    # MULTI-LAYER CONTEXT ASSEMBLY
+    # Context assembly + persistence
     # ================================================
 
     def build_full_context(self, current_query: str) -> Dict[str, str]:
-        """
-        Build comprehensive context from all memory layers.
-
-        Args:
-            current_query: Current user query
-
-        Returns:
-            Dict with context from each layer
-        """
-        context = {
-            'short_term': self.get_short_term_context(),
-            'rolling_summary': self.get_rolling_summary_context() if INCLUDE_SUMMARIES_IN_SEARCH else "",
-            'semantic': self.get_semantic_context(current_query),
-            'structured': self._format_structured_context()
+        return {
+            "short_term": self.get_short_term_context(),
+            "rolling_summary": "",
+            "semantic": self.get_semantic_context(current_query),
+            "structured": self._format_structured_context(),
         }
-
-        return context
-
-    def _format_structured_context(self) -> str:
-        """Format structured memory for inclusion in prompts."""
-        structured = self.get_structured_memory()
-        # Make the formatter robust to either a dict (full structured memory)
-        # or a list (e.g. when callers accidentally return only a subsection).
-        if not structured:
-            return ""
-
-        # If it's a dict, format the known structured fields.
-        if isinstance(structured, dict):
-            # If dict is empty or all falsy, nothing to include.
-            if not any(structured.values()):
-                return ""
-
-            lines = ["=== User Profile ==="]
-
-            user_profile = structured.get('user', {})
-            if user_profile:
-                if user_profile.get('name'):
-                    lines.append(f"Name: {user_profile['name']}")
-                if user_profile.get('age'):
-                    lines.append(f"Age: {user_profile['age']}")
-                if user_profile.get('birth_year'):
-                    lines.append(f"Birth Year: {user_profile['birth_year']}")
-
-            preferences = structured.get('preferences', {})
-            if preferences:
-                lines.append("\nPreferences:")
-                for key, value in preferences.items():
-                    lines.append(f"  {key}: {value}")
-
-            system_state = structured.get('system_state', {})
-            if system_state:
-                # Include known system_state fields such as difficulties
-                lines.append("\nSystem State:")
-                # If difficulties is a list, format nicely
-                difficulties = system_state.get('difficulties')
-                if isinstance(difficulties, list) and difficulties:
-                    lines.append("  Difficulties:")
-                    for d in difficulties:
-                        lines.append(f"    - {d}")
-                # Include any other keys in system_state
-                for k, v in system_state.items():
-                    if k == 'difficulties':
-                        continue
-                    lines.append(f"  {k}: {v}")
-
-            goals = structured.get('goals', [])
-            if goals:
-                lines.append("\nGoals:")
-                for goal in goals:
-                    lines.append(f"  - {goal}")
-
-            return "\n".join(lines) if len(lines) > 1 else ""
-
-        # If it's a list, assume it's a simple list of goals or items and display them.
-        if isinstance(structured, list):
-            if not structured:
-                return ""
-
-            lines = ["=== User Profile ==="]
-            # If list of strings, treat as goals; otherwise, stringify entries.
-            if all(isinstance(x, str) for x in structured):
-                lines.append("\nGoals:")
-                for goal in structured:
-                    lines.append(f"  - {goal}")
-            else:
-                for item in structured:
-                    lines.append(f"- {item}")
-
-            return "\n".join(lines) if len(lines) > 1 else ""
-
-        # Fallback: stringify unexpected types.
-        try:
-            return str(structured)
-        except Exception:
-            return ""
-
-    # ================================================
-    # PERSISTENT STORAGE
-    # ================================================
 
     def save_all(self) -> None:
-        """Save all persistent memory to disk."""
-        logger.debug("Starting save_all() - saving all memory layers")
-        self.structured.save()
+        self.long_term.save()
         self.semantic.save()
-        logger.info("All memory layers saved")
+        self._sync_legacy_files()
 
-    def clear_short_term(self) -> None:
-        """Clear short-term memory (for new conversations)."""
-        self.short_term.clear()
-        logger.info("Short-term memory cleared")
-    
     def add_user_message(self, content: str) -> None:
-        """Add a user message to short-term memory."""
-        self.add_short_term_message('user', content)
-    
+        self.add_short_term_message("user", content)
+
     def add_assistant_message(self, content: str) -> None:
-        """Add an assistant message to short-term memory."""
-        self.add_short_term_message('assistant', content)
-    
+        self.add_short_term_message("assistant", content)
+
     def persist_structured_memory(self) -> None:
-        """Explicitly persist structured memory to disk."""
-        self.structured.save()
-        logger.info("Structured memory persisted")
-    
+        self.long_term.save()
+        self._sync_legacy_files()
+
     def persist_semantic_memory(self) -> None:
-        """Explicitly persist semantic memory to disk."""
         self.semantic.save()
-        logger.info("Semantic memory persisted")
+        self._sync_legacy_files()
 
-
-class StructuredMemory:
-    """
-    Layer 4: Structured persistent memory.
-    Stores user profile, preferences, goals, and system state as JSON.
-    """
-
-    def __init__(self, filepath: str):
+    def _sync_legacy_files(self) -> None:
         """
-        Initialize structured memory.
-
-        Args:
-            filepath: Path to JSON storage file
+        Backward compatibility:
+        keep legacy files updated for existing workflows/inspection.
         """
-        self.filepath = filepath
-        logger.info(f"[STRUCTURED_MEMORY] Init with filepath: {filepath}")
-        logger.info(f"[STRUCTURED_MEMORY] File exists: {os.path.exists(filepath)}")
-        logger.info(f"[STRUCTURED_MEMORY] Filepath is absolute: {os.path.isabs(filepath)}")
-        loaded_data = self._load()
-        
-        self.data = loaded_data or {
-            'user': {},
-            'preferences': {},
-            'goals': [],
-            'system_state': {},
-            'created_at': datetime.now().isoformat()
-        }
-        logger.info(f"[STRUCTURED_MEMORY] Initialized with data keys: {list(self.data.keys())}")
-        logger.info(f"[STRUCTURED_MEMORY] Preferences loaded: {self.data.get('preferences', {})}")
+        structured_legacy = os.path.join(BASE_DIR, "structured_memory.json")
+        semantic_legacy = os.path.join(BASE_DIR, "semantic_memory.json")
 
-    def _load(self) -> Optional[Dict]:
-        """Load structured memory from file."""
         try:
-            filepath = self.filepath
-            logger.info(f"[LOAD] Attempting to load from: {filepath}")
-            logger.info(f"[LOAD] File exists: {os.path.exists(filepath)}")
-            logger.info(f"[LOAD] File is absolute: {os.path.isabs(filepath)}")
-            logger.info(f"[LOAD] File size: {os.path.getsize(filepath) if os.path.exists(filepath) else 'N/A'}")
-            
-            if os.path.exists(filepath):
-                try:
-                    with open(filepath, 'r') as f:
-                        data = json.load(f)
-                        logger.info(f"[LOAD] ✓ Successfully loaded data from {filepath}")
-                        logger.info(f"[LOAD] Data keys: {list(data.keys())}")
-                        logger.info(f"[LOAD] Preferences: {data.get('preferences', {})}")
-                        # Expect a dict for structured memory; if file contains other
-                        # formats (e.g., a list from older semantic dumps), ignore it
-                        if isinstance(data, dict):
-                            logger.info(f"[LOAD] ✓ Data is valid dict, returning it")
-                            return data
-                        else:
-                            logger.warning("Structured memory file has unexpected format; ignoring and starting fresh.")
-                            return None
-                except Exception as e:
-                    logger.error(f"[LOAD] ✗ Error reading file: {e}")
-                    return None
-            else:
-                logger.info(f"[LOAD] ✗ File does not exist at: {filepath}")
-        except Exception as e:
-            logger.error(f"[LOAD] ✗ Unexpected error: {e}")
-        return None
+            with open(structured_legacy, "w", encoding="utf-8") as f:
+                json.dump(self.long_term.get_all(), f, indent=2)
+        except Exception as exc:
+            logger.warning(f"Legacy structured memory sync failed: {exc}")
 
-    def set(self, key: str, value: any) -> None:
-        """
-        Set a value using dot notation (e.g., 'user.name').
-
-        Args:
-            key: Dot-separated key path
-            value: Value to set
-        """
-        keys = key.split('.')
-        current = self.data
-
-        for k in keys[:-1]:
-            if k not in current:
-                current[k] = {}
-            current = current[k]
-
-        current[keys[-1]] = value
-        self.save()
-
-    def get(self, key: str) -> Optional[any]:
-        """
-        Get a value using dot notation.
-
-        Args:
-            key: Dot-separated key path
-
-        Returns:
-            Value or None if not found
-        """
-        keys = key.split('.')
-        current = self.data
-
-        for k in keys:
-            if isinstance(current, dict):
-                current = current.get(k)
-            else:
-                return None
-
-        return current
-
-    def get_all(self) -> Dict:
-        """Get entire structured memory."""
-        return self.data.copy()
-
-    def save(self) -> None:
-        """Save to disk atomically using temp file + rename."""
-        if not self.data:
-            logger.debug("Structured memory data is empty, skipping save")
-            return
-            
         try:
-            # Write to temp file first, then rename for atomic operation
-            temp_file = self.filepath + '.tmp'
-            with open(temp_file, 'w') as f:
-                json.dump(self.data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            
-            # Atomic rename
-            os.replace(temp_file, self.filepath)
-            logger.debug(f"Structured memory saved atomically to {self.filepath}")
-        except Exception as e:
-            logger.error(f"Failed to save structured memory: {e}")
-            # Clean up temp file if it exists
-            if os.path.exists(self.filepath + '.tmp'):
-                try:
-                    os.remove(self.filepath + '.tmp')
-                except Exception:
-                    pass
+            vector_rows = self.semantic.export_memories()
+            with open(semantic_legacy, "w", encoding="utf-8") as f:
+                json.dump(vector_rows, f, indent=2)
+        except Exception as exc:
+            logger.warning(f"Legacy semantic memory sync failed: {exc}")
 
 
-# ================================================
-# TESTS FOR EMBEDDING-DIM CHANGE ROBUSTNESS
-# ================================================
-
-def test_semantic_memory_embedding_dim_change():
+class StructuredMemory(LongTermMemory):
     """
-    Test that semantic memory correctly handles embedding dimension changes.
-    Simulates switching embedding models (e.g., all-MiniLM to larger model).
+    Backward-compatible alias class.
     """
-    import numpy as np
-
-    # Create a test manager
-    mem_mgr = MemoryManager()
-    
-    # Clear any existing memories for a clean test
-    mem_mgr.semantic.clear()
-    
-    # Store initial embedding dim
-    initial_dim = mem_mgr.semantic.embedding_dim
-    logger.info(f"Initial embedding dim: {initial_dim}")
-
-    # Add a memory entry
-    mem_mgr.add_semantic_memory("Test memory 1", metadata={"source": "test"})
-    assert len(mem_mgr.semantic.memories) == 1, f"Memory not added; found {len(mem_mgr.semantic.memories)} memories"
-    logger.info(f"Added memory; stored embeddings have dim {len(mem_mgr.semantic.memories[0]['embedding'])}")
-
-    # Search should work with current dim
-    results = mem_mgr.semantic.search("Test memory")
-    assert len(results) > 0, "Search failed with original dim"
-    logger.info(f"Search found {len(results)} results with original dim")
-
-    # Simulate a model change by forcing query_embedding to different dim
-    # We'll mock the embedding to return a different dimension
-    original_embed = mem_mgr.semantic.model_manager.embed
-    
-    def mock_embed_smaller(texts):
-        """Mock embedder returning smaller dimension embeddings."""
-        # Return embeddings of dim 128 (reduced from original)
-        results = [np.random.randn(128).astype(np.float32) for _ in texts]
-        return results
-
-    # Patch embed to return smaller dim
-    mem_mgr.semantic.model_manager.embed = mock_embed_smaller
-
-    # Now search with the new dim
-    # This should trigger re-embedding of stored memories to new dim
-    try:
-        results = mem_mgr.semantic.search("test query")
-        logger.info(f"Search with different embedding dim succeeded; found {len(results)} results")
-        # After re-embedding, the stored memories should have new dim
-        assert mem_mgr.semantic.embedding_dim == 128, f"Embedding dim not updated: {mem_mgr.semantic.embedding_dim}"
-        logger.info("✓ Embedding dimension auto-updated on search with different dim")
-    except AssertionError as e:
-        logger.error(f"✗ FAISS assertion error on search: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"✗ Unexpected error during search: {e}")
-        raise
-    finally:
-        # Restore original embedder
-        mem_mgr.semantic.model_manager.embed = original_embed
-
-    # Test that add_memory also handles dim changes
-    def mock_embed_larger(texts):
-        """Mock embedder returning larger dimension embeddings."""
-        # Return embeddings of dim 512 (much larger)
-        results = [np.random.randn(512).astype(np.float32) for _ in texts]
-        return results
-
-    mem_mgr.semantic.model_manager.embed = mock_embed_larger
-    
-    try:
-        mem_mgr.add_semantic_memory("Test memory 2", metadata={"source": "test"})
-        logger.info(f"Added memory with new embedding dim; current stored dim: {mem_mgr.semantic.embedding_dim}")
-        assert mem_mgr.semantic.embedding_dim == 512, f"Embedding dim not updated on add: {mem_mgr.semantic.embedding_dim}"
-        logger.info("✓ Embedding dimension auto-updated on add_memory with different dim")
-    except AssertionError as e:
-        logger.error(f"✗ FAISS assertion error on add: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"✗ Unexpected error during add: {e}")
-        raise
-    finally:
-        mem_mgr.semantic.model_manager.embed = original_embed
-
-    logger.info("✓ All embedding-dim change tests passed")
-
-
-if __name__ == "__main__":
-    """Run robustness tests."""
-    logger.info("Running semantic memory embedding-dim change tests...")
-    try:
-        test_semantic_memory_embedding_dim_change()
-        logger.info("✓✓✓ All tests passed ✓✓✓")
-    except Exception as e:
-        logger.error(f"Test failed: {e}")
-        raise

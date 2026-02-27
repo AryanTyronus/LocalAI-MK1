@@ -22,11 +22,19 @@ from core.model_manager import ModelManager
 
 
 class DocumentManager:
-    def __init__(self, chunk_tokens: int = 800, overlap: int = 100, index_file: Optional[str] = None):
+    def __init__(
+        self,
+        chunk_tokens: int = 800,
+        overlap: int = 100,
+        index_file: Optional[str] = None,
+        lazy_init: bool = True
+    ):
         self.model_manager = ModelManager.get_instance()
         self.chunk_tokens = chunk_tokens
         self.overlap = overlap
         self.index_file = index_file
+        self._loaded = False
+        self._lazy_init = lazy_init
 
         # Loaded documents metadata
         self.documents: List[Dict] = []  # {doc_id, doc_name, path, num_pages}
@@ -38,11 +46,17 @@ class DocumentManager:
 
         self.active_doc_id: Optional[str] = None
 
-        # Load existing docs
+        if not self._lazy_init:
+            self._load_and_index()
+
+    def _load_and_index(self):
+        """Load documents and build index once."""
+        if self._loaded:
+            return
         self.load_documents()
-        # Build index if chunks exist
         if self.chunks:
             self._build_index()
+        self._loaded = True
 
     # ---------------------- Document Loading ----------------------
     def load_documents(self):
@@ -168,16 +182,18 @@ class DocumentManager:
         logger.info(f"Built document index with {len(self.chunks)} chunks (dim={self.embedding_dim})")
 
     def _ensure_index(self):
+        if self._lazy_init and not self._loaded:
+            self._load_and_index()
         if self.index is None:
             self._build_index()
 
     # ---------------------- Retrieval ----------------------
     def search(self, query: str, top_k: int = 5, doc_id: Optional[str] = None) -> List[Dict]:
         """Search for top_k most relevant chunks for the query. If doc_id provided, only search that document."""
+        self._ensure_index()
+
         if not self.chunks:
             return []
-
-        self._ensure_index()
 
         # If restricting to doc_id, build a temporary index on those chunks
         if doc_id:
@@ -216,9 +232,13 @@ class DocumentManager:
         self.active_doc_id = doc_id
 
     def list_documents(self) -> List[Dict]:
+        if self._lazy_init and not self._loaded:
+            self._load_and_index()
         return self.documents
 
     def get_active_document(self) -> Optional[Dict]:
+        if self._lazy_init and not self._loaded:
+            self._load_and_index()
         if not self.active_doc_id:
             return None
         for d in self.documents:
@@ -235,4 +255,3 @@ class DocumentManager:
         if not self.index_file or not os.path.exists(self.index_file):
             return
         self.index = faiss.read_index(self.index_file)
-

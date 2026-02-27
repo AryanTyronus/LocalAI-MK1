@@ -45,7 +45,7 @@ class AIService:
         
         logger.info("AIService initialized as pure orchestrator")
     
-    def generate_response(self, user_message: str, mode: str = "chat") -> str:
+    def generate_response(self, user_message: str, mode: str = "chat", options: dict = None) -> str:
         """
         Generate a response for the user message.
         
@@ -58,9 +58,9 @@ class AIService:
         Returns:
             Generated response string
         """
-        return self._pipeline.generate(user_message, mode)
+        return self._pipeline.generate(user_message, mode, options=options)
     
-    def generate_stream(self, user_message: str, mode: str = "chat") -> Generator[str]:
+    def generate_stream(self, user_message: str, mode: str = "chat", options: dict = None) -> Generator[str]:
         """
         Generate a streaming response for the user message.
         
@@ -74,7 +74,7 @@ class AIService:
         Yields:
             Content chunks (str), then JSON-encoded final token info
         """
-        for item in self._pipeline.run_stream(user_message, mode):
+        for item in self._pipeline.run_stream(user_message, mode, options=options):
             if 'content' in item:
                 yield item['content']
             elif 'done' in item:
@@ -101,3 +101,9 @@ class AIService:
         """
         return self.generate_response(user_input, mode)
 
+    def get_last_turn_meta(self) -> dict:
+        """Expose latest pipeline metadata (e.g., memory_updated)."""
+        getter = getattr(self._pipeline, "get_last_turn_meta", None)
+        if callable(getter):
+            return getter()
+        return {}

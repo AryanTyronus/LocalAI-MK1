@@ -1,0 +1,24 @@
+<section class="chat-shell">
+  <header class="chat-header">
+    <div>
+      <h2>Conversation</h2>
+      <p class="chat-header__subtitle">Streaming enabled</p>
+    </div>
+    <div class="chat-header__actions">
+      <button id="memoryDrawerBtn" class="ghost-btn" type="button">🧠 Memory</button>
+      <button id="logsDrawerBtn" class="ghost-btn" type="button">Tool Logs</button>
+    </div>
+  </header>
+
+  <section id="devLogPanel" class="devlog hidden"></section>
+
+  <main id="feed" class="feed"></main>
+
+  <footer class="composer-wrap">
+    <div class="composer">
+      <textarea id="input" class="composer__input" rows="1" placeholder="Message LocalAI..."></textarea>
+      <button id="sendBtn" class="composer__send" disabled>Send</button>
+    </div>
+    <p class="composer__disclaimer">LocalAI can make mistakes. Verify important information.</p>
+  </footer>
+</section>

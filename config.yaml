@@ -1,12 +1,32 @@
 model:
-  default: qwen-7b
+  default: mlx-community/Qwen2.5-7B-Instruct-4bit
   max_tokens: 2048
+  context_window: 4096
+  threading:
+    enabled: true
+    max_threads: 4
+
+personality:
+  tone: "calm_controlled_witty"
+  persistent_prompt: |
+    You are LocalAI.
+    Tone requirements:
+    - Calm and controlled under all conditions.
+    - Slightly witty when natural, never playful to the point of distraction.
+    - Concise, practical, and direct.
+    - Consistent voice across all responses.
+
+ui:
+  projects:
+    - LocalAI
+    - Study
+    - Coding
 
 # ============================================
 # TOKEN BUDGET CONFIGURATION (Phase 2)
 # ============================================
 token_budget:
-  max_context_tokens: 32000       # Maximum tokens for context (excluding generation)
+  max_context_tokens: 4096        # Maximum tokens for context (excluding generation)
   reserve_for_generation: 2048    # Reserve tokens for generation output
   enable_trimming: true           # Enable automatic token trimming
   estimation_method: "chars"      # Token estimation: "chars" or "accurate"
@@ -26,6 +46,7 @@ memory:
   # Layer 1: Short-term memory (active conversation)
   short_term:
     max_messages: 10        # Keep last 10 messages in active window
+    max_tokens: 900         # Token-aware truncation target for short-term context
     enabled: true
 
   # Layer 2: Rolling summary memory (compressed conversation history)
@@ -43,11 +64,13 @@ memory:
     similarity_threshold: 0.5
     max_results: 3          # Maximum memories to retrieve per query
     persist_interval: 10    # Save index every N updates
+    max_entries: 2000       # Prevent vector memory growth overflow
+    namespace: "auto"       # Per-project namespace (auto = cwd project name)
 
   # Layer 4: Structured persistent memory (user profile & state)
   structured:
     enabled: true
-    file: "structured_memory.json"
+    file: "memory/long_term.json"
     auto_extract_profile: true  # Auto-extract user info
     categories:
       - user_profile        # Name, age, preferences

@@ -14,15 +14,14 @@ from flask import Flask, request, jsonify, render_template, Response
 import os
 import socket
 
-from core.dependency_container import DependencyContainer
-from core.config import DEBUG_MODE
+from core.orchestrator import AppOrchestrator
+from core.config import DEBUG_MODE, Config
 from core.logger import logger
 
 app = Flask(__name__)
 
-# Global container and service (lazy initialization)
-_container = None
-_ai_service = None
+# Global orchestrator (lazy initialization)
+_orchestrator = AppOrchestrator()
 
 
 def get_ai_service():
@@ -32,18 +31,13 @@ def get_ai_service():
     Returns:
         AIService instance
     """
-    global _container, _ai_service
-    if _ai_service is None:
-        try:
-            _container = DependencyContainer()
-            _ai_service = _container.get_ai_service()
-            logger.info("AIService initialized successfully")
-        except Exception as e:
-            import traceback
-            logger.error(f"AI SERVICE INITIALIZATION FAILED: {type(e).__name__}: {str(e)}")
-            traceback.print_exc()
-            raise
-    return _ai_service
+    try:
+        return _orchestrator.get_ai_service()
+    except Exception as e:
+        import traceback
+        logger.error(f"AI SERVICE INITIALIZATION FAILED: {type(e).__name__}: {str(e)}")
+        traceback.print_exc()
+        raise
 
 
 # ===================
@@ -53,7 +47,7 @@ def get_ai_service():
 @app.route("/")
 def home():
     """Render the home page."""
-    return render_template("index.html")
+    return render_template("index.html", projects=Config().ui_projects)
 
 
 @app.route("/chat", methods=["POST"])
@@ -78,6 +72,7 @@ def chat_api():
     
     user_message = data.get("message", "").strip()
     mode = data.get("mode", "chat")
+    options = data.get("options", {})
     
     if not user_message:
         return jsonify({"response": "Please enter a message."}), 400
@@ -87,9 +82,13 @@ def chat_api():
         svc = get_ai_service()
         
         # Use the new generate_response method
-        reply = svc.generate_response(user_message, mode=mode)
+        reply = svc.generate_response(user_message, mode=mode, options=options)
+        turn_meta = svc.get_last_turn_meta() if hasattr(svc, "get_last_turn_meta") else {}
         
-        return jsonify({"response": reply})
+        return jsonify({
+            "response": reply,
+            "memory_updated": bool(turn_meta.get("memory_updated", False))
+        })
     
     except Exception as e:
         import traceback
@@ -128,6 +127,7 @@ def chat_stream():
     
     user_message = data.get("message", "").strip()
     mode = data.get("mode", "chat")
+    options = data.get("options", {})
     
     if not user_message:
         return jsonify({"response": "Please enter a message."}), 400
@@ -137,7 +137,7 @@ def chat_stream():
         try:
             svc = get_ai_service()
             
-            for chunk in svc.generate_stream(user_message, mode=mode):
+            for chunk in svc.generate_stream(user_message, mode=mode, options=options):
                 # Send chunk as SSE data
                 yield f"data: {chunk}\n\n"
                 
@@ -199,6 +199,7 @@ if __name__ == "__main__":
     if args.preload_model:
         try:
             print("Preloading model and services...")
+            _orchestrator.warm_model()
             get_ai_service()
             print("Preload complete.")
         except Exception as e:
@@ -206,4 +207,3 @@ if __name__ == "__main__":
     
     # Run the Flask app
     app.run(host="0.0.0.0", port=chosen, debug=False)
-

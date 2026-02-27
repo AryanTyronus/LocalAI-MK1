@@ -1,0 +1,49 @@
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand__logo">L</div>
+    <div>
+      <h1 class="brand__title">LocalAI</h1>
+      <p class="brand__subtitle">Personal AI Workspace</p>
+    </div>
+  </div>
+
+  <div class="panel-group">
+    <label class="field">
+      <span class="field__label">Project</span>
+      <select id="projectSelect" class="field__control">
+        {% for project in projects %}
+        <option value="{{ project }}">{{ project }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label class="field">
+      <span class="field__label">Mode</span>
+      <select id="modeSelect" class="field__control">
+        <option value="chat">chat</option>
+        <option value="coding">coding</option>
+        <option value="research">research</option>
+        <option value="agent">agent</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="panel-group toggles">
+    <label class="toggle">
+      <input id="memoryToggle" type="checkbox" checked>
+      <span>Memory</span>
+    </label>
+    <label class="toggle">
+      <input id="devLogToggle" type="checkbox">
+      <span>Dev Logs</span>
+    </label>
+  </div>
+
+  <div class="status-card">
+    <span id="modelDot" class="status-dot status-dot--idle"></span>
+    <div>
+      <div class="status-title">Model Status</div>
+      <div id="modelStatusText" class="status-subtitle">Idle</div>
+    </div>
+  </div>
+</aside>
