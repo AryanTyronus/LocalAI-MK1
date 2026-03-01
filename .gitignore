@@ -1,5 +1,7 @@
 # Mac
 .DS_Store
+.AppleDouble
+.LSOverride
 
 # Python
 __pycache__/
@@ -7,20 +9,30 @@ __pycache__/
 *.pyo
 *.pyd
 .venv/
+venv/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Env files
 .env
+.env.*
 
 # Logs
 *.log
 
-# FAISS / vector indexes
+# Runtime indexes / caches
 *.faiss
+memory/vector/**/index.faiss
 
-# Memory dumps (optional if you don’t want to push runtime data)
+# Runtime memory/state (generated during app usage)
+memory/long_term.json
+memory/vector/**/memories.json
 semantic_memory.json
 structured_memory.json
-knowledge
+
+# Optional local scratch/docs
 PHASE2_PLAN.md
 TODO.md
 TODO_PERSISTENCE_FIX.md

@@ -119,49 +119,70 @@ class DependencyContainer:
             'python_executor',
             'Execute bounded Python snippets in a short-lived subprocess',
             {'code': 'string'},
-            python_executor.execute
+            python_executor.execute,
+            category='diagnostics',
+            human_name='Python Executor',
+            example_usage='run python: print(2 + 2)'
         )
 
         ToolRegistry.register_tool(
             'file_reader',
             'Read a text file from the current workspace',
             {'filepath': 'string'},
-            file_reader.execute
+            file_reader.execute,
+            category='filesystem',
+            human_name='File Reader',
+            example_usage='read file structured_memory.json'
         )
 
         ToolRegistry.register_tool(
             'stock_fetcher',
             'Fetch delayed stock quote for a ticker symbol',
             {'symbol': 'string'},
-            stock_fetcher.execute
+            stock_fetcher.execute,
+            category='markets',
+            human_name='Stock Fetcher',
+            example_usage='stock price for AAPL'
         )
 
         ToolRegistry.register_tool(
             'news_fetcher',
             'Fetch latest real-time news headlines by topic',
             {'topic': 'string', 'limit': 'integer'},
-            news_fetcher.execute
+            news_fetcher.execute,
+            category='news',
+            human_name='News Fetcher',
+            example_usage='latest news on AI'
         )
 
         ToolRegistry.register_tool(
             'weather_fetcher',
             'Fetch latest weather updates for a location',
             {'location': 'string'},
-            weather_fetcher.execute
+            weather_fetcher.execute,
+            category='weather',
+            human_name='Weather Fetcher',
+            example_usage='weather in London'
         )
 
         ToolRegistry.register_tool(
             'indian_market_fetcher',
             'Fetch Indian stock market overview and NSE/BSE stock details',
             {'symbol': 'string'},
-            indian_market_fetcher.execute
+            indian_market_fetcher.execute,
+            category='markets',
+            human_name='Indian Market Fetcher',
+            example_usage='NSE stock TCS'
         )
 
         ToolRegistry.register_tool(
             'current_affairs_fetcher',
             'Fetch live current-affairs facts',
             {'query': 'string'},
-            current_affairs_fetcher.execute
+            current_affairs_fetcher.execute,
+            category='news',
+            human_name='Current Affairs Fetcher',
+            example_usage='who is the president of the united states'
         )
     
     def get_ai_service(self) -> AIService:

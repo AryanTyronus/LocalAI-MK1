@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 import platform
+import subprocess
+import sys
 from typing import Any, Tuple
 
 from core.logger import logger
@@ -72,6 +74,37 @@ class LLMLoader:
         model, tokenizer = load(self._model_name)
         logger.info("Model load completed")
         return model, tokenizer
+
+    @staticmethod
+    def probe_runtime(timeout_seconds: int = 8) -> Tuple[bool, str]:
+        """
+        Probe whether MLX runtime can initialize safely.
+
+        Runs in a subprocess so host-level MLX crashes do not terminate the
+        main LocalAI process.
+        """
+        probe_code = (
+            "import mlx.core as mx\n"
+            "d = mx.default_device()\n"
+            "print(str(d))\n"
+        )
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", probe_code],
+                capture_output=True,
+                text=True,
+                timeout=max(1, int(timeout_seconds)),
+                check=False,
+            )
+        except Exception as exc:
+            return False, f"probe_exception:{type(exc).__name__}:{exc}"
+
+        if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip().splitlines()
+            tail = stderr[-1] if stderr else "unknown_ml_runtime_error"
+            return False, tail
+
+        return True, (proc.stdout or "").strip()
 
     def generate(self, model: Any, tokenizer: Any, prompt: str, max_tokens: int = 300) -> str:
         """

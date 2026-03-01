@@ -115,54 +115,84 @@ class ToolRouter:
     # Tool definitions (for future extension)
     REGISTERED_TOOLS = {
         'open_app': {
+            'human_name': 'Open App',
             'description': 'Open an application',
+            'example_usage': 'open calculator',
             'parameters': {'app_name': 'string'},
             'requires_confirmation': True,
+            'category': 'system',
         },
         'search_web': {
+            'human_name': 'Web Search',
             'description': 'Search the web',
+            'example_usage': 'search for latest AI chip news',
             'parameters': {'query': 'string'},
             'requires_confirmation': False,
+            'category': 'retrieval',
         },
-        'read_file': {
+        'file_reader': {
+            'human_name': 'Read File',
             'description': 'Read a file from disk',
+            'example_usage': 'read file /path/to/file.py',
             'parameters': {'filepath': 'string'},
             'requires_confirmation': True,
+            'category': 'filesystem',
         },
         'write_file': {
+            'human_name': 'Write File',
             'description': 'Write content to a file',
+            'example_usage': 'write file notes.txt',
             'parameters': {'filepath': 'string', 'content': 'string'},
             'requires_confirmation': True,
+            'category': 'filesystem',
         },
-        'run_code': {
+        'python_executor': {
+            'human_name': 'Run Python',
             'description': 'Execute code',
+            'example_usage': 'run python: print(2 + 2)',
             'parameters': {'code': 'string'},
             'requires_confirmation': True,
+            'category': 'diagnostics',
         },
         'stock_fetcher': {
+            'human_name': 'Stock Data',
             'description': 'Fetch delayed stock quote',
+            'example_usage': 'stock price for NVDA',
             'parameters': {'symbol': 'string'},
             'requires_confirmation': False,
+            'category': 'markets',
         },
         'news_fetcher': {
+            'human_name': 'News Headlines',
             'description': 'Fetch latest real-time news headlines',
+            'example_usage': 'latest news on technology',
             'parameters': {'topic': 'string', 'limit': 'integer'},
             'requires_confirmation': False,
+            'category': 'news',
         },
         'weather_fetcher': {
+            'human_name': 'Weather',
             'description': 'Fetch latest weather for a location',
+            'example_usage': 'weather in Tokyo',
             'parameters': {'location': 'string'},
             'requires_confirmation': False,
+            'category': 'weather',
         },
         'indian_market_fetcher': {
+            'human_name': 'Indian Market Data',
             'description': 'Fetch Indian stock market overview and NSE/BSE quotes',
+            'example_usage': 'indian stock market today',
             'parameters': {'symbol': 'string'},
             'requires_confirmation': False,
+            'category': 'markets',
         },
         'current_affairs_fetcher': {
+            'human_name': 'Current Affairs',
             'description': 'Fetch live current-affairs facts from trusted sources',
+            'example_usage': 'who is the president of the united states',
             'parameters': {'query': 'string'},
             'requires_confirmation': False,
+            'category': 'news',
         },
     }
     
@@ -370,7 +400,10 @@ class ToolRouter:
         name: str,
         description: str,
         parameters: Dict,
-        requires_confirmation: bool = True
+        requires_confirmation: bool = True,
+        category: str = "tools",
+        human_name: str = "",
+        example_usage: str = "",
     ) -> None:
         """
         Register a new tool for routing.
@@ -384,9 +417,12 @@ class ToolRouter:
             requires_confirmation: Whether tool needs confirmation
         """
         self.REGISTERED_TOOLS[name] = {
+            'human_name': (human_name or name).strip(),
             'description': description,
+            'example_usage': (example_usage or "").strip(),
             'parameters': parameters,
-            'requires_confirmation': requires_confirmation
+            'requires_confirmation': requires_confirmation,
+            'category': (category or "tools").strip().lower(),
         }
         logger.info(f"ToolRouter: Registered tool '{name}'")
     
@@ -424,6 +460,51 @@ class ToolRouter:
             }
             for name, definition in self.REGISTERED_TOOLS.items()
         ]
+
+    def get_trigger_definitions(self) -> List[Dict]:
+        """
+        Return internal trigger definitions (backend diagnostics only).
+        """
+        rows: List[Dict] = []
+        for intent, patterns in self.INTENT_PATTERNS.items():
+            tool_name = self._intent_to_tool_name(intent)
+            tool_meta = self.REGISTERED_TOOLS.get(tool_name, {})
+            for pattern in patterns:
+                rows.append(
+                    {
+                        "intent": intent.value,
+                        "pattern": pattern,
+                        "tool_name": tool_name,
+                        "action": tool_meta.get("description", tool_name or "unmapped"),
+                        "category": tool_meta.get("category", "tools"),
+                    }
+                )
+        return rows
+
+    def get_help_triggers(self, available_tool_names: Optional[set] = None) -> List[Dict]:
+        """
+        Return user-facing help entries without exposing internal regex patterns.
+        """
+        rows: List[Dict] = []
+        seen = set()
+        for intent in self.INTENT_PATTERNS.keys():
+            tool_name = self._intent_to_tool_name(intent)
+            if not tool_name or tool_name in seen:
+                continue
+            if available_tool_names is not None and tool_name not in available_tool_names:
+                continue
+            seen.add(tool_name)
+            tool_meta = self.REGISTERED_TOOLS.get(tool_name, {})
+            rows.append(
+                {
+                    "tool_name": tool_name,
+                    "name": tool_meta.get("human_name", tool_name),
+                    "description": tool_meta.get("description", ""),
+                    "usage": tool_meta.get("example_usage", ""),
+                    "category": tool_meta.get("category", "tools"),
+                }
+            )
+        return rows
 
 
 # Global instance for easy access

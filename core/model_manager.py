@@ -103,7 +103,20 @@ class ModelManager:
             if os.getenv('LOCALAI_DEV_MODE') == '1':
                 cls._instance = FakeModelManager()
             else:
-                cls._instance = ModelManager()
+                require_real = os.getenv("LOCALAI_REQUIRE_REAL_MODEL") == "1"
+                ok, probe_msg = LLMLoader.probe_runtime()
+                if ok:
+                    cls._instance = ModelManager()
+                else:
+                    if require_real:
+                        raise RuntimeError(
+                            f"Real model required but MLX runtime probe failed: {probe_msg}"
+                        )
+                    logger.warning(
+                        "MLX runtime probe failed; falling back to FakeModelManager. "
+                        f"Reason: {probe_msg}"
+                    )
+                    cls._instance = FakeModelManager()
         return cls._instance
 
     def warm_up(self) -> None:

@@ -1,27 +1,70 @@
 import json
-from typing import Callable, Dict
+from typing import Callable, Dict, List
 from core.logger import logger
 
 
 class Tool:
-    def __init__(self, name: str, description: str, schema: Dict, func: Callable):
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        schema: Dict,
+        func: Callable,
+        category: str = "tools",
+        human_name: str = "",
+        example_usage: str = "",
+    ):
         self.name = name
         self.description = description
         self.schema = schema or {}
         self.func = func
+        self.category = (category or "tools").strip().lower()
+        self.human_name = (human_name or name).strip()
+        self.example_usage = (example_usage or "").strip()
 
 
 class ToolRegistry:
     _tools: Dict[str, Tool] = {}
 
     @classmethod
-    def register_tool(cls, name: str, description: str, schema: Dict, func: Callable):
-        cls._tools[name] = Tool(name, description, schema, func)
+    def register_tool(
+        cls,
+        name: str,
+        description: str,
+        schema: Dict,
+        func: Callable,
+        category: str = "tools",
+        human_name: str = "",
+        example_usage: str = "",
+    ):
+        cls._tools[name] = Tool(
+            name,
+            description,
+            schema,
+            func,
+            category=category,
+            human_name=human_name,
+            example_usage=example_usage,
+        )
         logger.info(f"Registered tool: {name}")
 
     @classmethod
     def get_tool(cls, name: str):
         return cls._tools.get(name)
+
+    @classmethod
+    def list_tools(cls) -> List[Dict]:
+        return [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "schema": dict(tool.schema),
+                "category": tool.category,
+                "human_name": tool.human_name,
+                "example_usage": tool.example_usage,
+            }
+            for tool in sorted(cls._tools.values(), key=lambda t: t.name)
+        ]
 
     @classmethod
     def execute_tool(cls, name: str, parameters: Dict, require_confirmation: bool = True):

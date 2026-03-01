@@ -22,9 +22,11 @@ import time
 import json
 import re
 from datetime import datetime
-from typing import Generator, Dict, List, Optional
+from collections import defaultdict
+from typing import Any, Generator, Dict, List, Optional
 
 from core.config import Config, DEBUG_MODE
+from core.command_registry import CommandRegistry
 from core.logger import logger
 from core.mode_controller import ModeController
 from core.prompt_builder import PromptBuilder
@@ -52,6 +54,7 @@ class GenerationPipeline:
     - Add assistant response to memory
     - Persist memory if needed
     """
+    SYSTEM_CARD_PREFIX = "__SYSTEM_CARD__:"
     
     def __init__(
         self,
@@ -117,12 +120,170 @@ class GenerationPipeline:
             "equation", "numerical", "solve",
             "formula", "calculate", "explain"
         ]
+
+        self._register_builtin_commands()
         
         logger.info("GenerationPipeline initialized")
     
     # ===================
     # Main Generation Methods
     # ===================
+
+    def _register_builtin_commands(self) -> None:
+        """Register built-in slash commands in the central registry."""
+        CommandRegistry.register_command(
+            name="/help",
+            description="Show all registered commands, tool triggers, and system capabilities.",
+            category="system",
+            usage="/help",
+            handler=self._handle_help_command,
+            store_in_memory=False,
+        )
+        CommandRegistry.register_command(
+            name="/tool",
+            description="Execute a tool by natural-language trigger routing.",
+            category="tools",
+            usage="/tool weather in mumbai",
+            handler=self._handle_tool_command,
+            store_in_memory=True,
+        )
+
+    def _handle_help_command(self, _context: Dict[str, Any], _args: str) -> Dict[str, Any]:
+        """Build a dynamic help card payload from live registries."""
+        payload = self._build_help_payload()
+        return {"system_card": payload}
+
+    def _handle_tool_command(self, context: Dict[str, Any], args: str) -> Dict[str, Any]:
+        """Slash command wrapper for tool execution."""
+        tool_prompt = (args or "").strip()
+        usage = "Usage: /tool <tool request>. Example: /tool weather in Tokyo"
+        if not tool_prompt:
+            return {"text": usage}
+
+        mode_obj = context.get("mode_obj")
+        reply = self._execute_tool_if_requested(f"/tool {tool_prompt}", mode_obj)
+        if reply is None:
+            return {
+                "text": "No matching tool trigger was found for that request. Use /help to see available tool examples."
+            }
+        return {"text": reply}
+
+    def _build_help_payload(self) -> Dict[str, Any]:
+        """Build grouped help payload with commands, tool triggers, and capabilities."""
+        command_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for cmd in CommandRegistry.list_commands():
+            row = {
+                "name": cmd.name,
+                "description": cmd.description,
+            }
+            if cmd.usage:
+                row["usage"] = cmd.usage
+            command_groups[cmd.category].append(row)
+
+        trigger_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        available_tool_names = {tool.get("name") for tool in self._tool_registry.list_tools()} if self._tool_registry else set()
+        for trigger in self._tool_router.get_help_triggers(available_tool_names=available_tool_names):
+            trigger_groups[trigger.get("category", "tools")].append(
+                {
+                    "name": trigger.get("name", ""),
+                    "usage": trigger.get("usage", ""),
+                    "description": trigger.get("description", ""),
+                    "tool_name": trigger.get("tool_name", ""),
+                }
+            )
+
+        capability_groups = self._build_system_capabilities()
+        sections = [
+            {
+                "kind": "commands",
+                "title": "Slash Commands",
+                "groups": [
+                    {"category": category, "items": sorted(items, key=lambda x: x["name"])}
+                    for category, items in sorted(command_groups.items(), key=lambda kv: kv[0])
+                ],
+            },
+            {
+                "kind": "tool_triggers",
+                "title": "Tool Triggers",
+                "groups": [
+                    {"category": category, "items": sorted(items, key=lambda x: x["tool_name"])}
+                    for category, items in sorted(trigger_groups.items(), key=lambda kv: kv[0])
+                ],
+            },
+            {
+                "kind": "capabilities",
+                "title": "System Capabilities",
+                "groups": [
+                    {"category": category, "items": items}
+                    for category, items in sorted(capability_groups.items(), key=lambda kv: kv[0])
+                ],
+            },
+        ]
+
+        return {
+            "type": "help",
+            "title": "LocalAI Help",
+            "generated_at": datetime.now().astimezone().isoformat(),
+            "sections": sections,
+        }
+
+    def _build_system_capabilities(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Discover runtime capabilities from config and registries."""
+        groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        mode_names = sorted(getattr(self._mode_controller, "_modes", {}).keys())
+        groups["modes"].append({"name": "available_modes", "value": ", ".join(mode_names) or "none"})
+        groups["diagnostics"].append({"name": "streaming", "value": "enabled"})
+        groups["diagnostics"].append({"name": "tool_router", "value": "enabled" if self._tool_router.is_enabled else "disabled"})
+
+        groups["memory"].append({"name": "short_term", "value": "enabled" if self._config.short_term_enabled else "disabled"})
+        groups["memory"].append({"name": "rolling_summary", "value": "enabled" if self._config.rolling_summary_enabled else "disabled"})
+        groups["memory"].append({"name": "semantic", "value": "enabled" if self._config.semantic_enabled else "disabled"})
+        groups["memory"].append({"name": "structured", "value": "enabled" if self._config.structured_enabled else "disabled"})
+
+        tool_count = len(self._tool_registry.list_tools()) if self._tool_registry else 0
+        trigger_count = len(self._tool_router.get_trigger_definitions())
+        groups["tools"].append({"name": "registered_tools", "value": str(tool_count)})
+        groups["tools"].append({"name": "trigger_patterns", "value": str(trigger_count)})
+
+        doc_count = 0
+        if self._document_manager:
+            try:
+                doc_count = len(self._document_manager.list_documents())
+            except Exception:
+                doc_count = 0
+        groups["retrieval"].append({"name": "loaded_documents", "value": str(doc_count)})
+
+        return groups
+
+    def _execute_slash_command(
+        self,
+        user_message: str,
+        mode_obj,
+        runtime: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Execute a slash command if registered and return formatted response details."""
+        text = (user_message or "").strip()
+        if not text.startswith("/"):
+            return None
+
+        parts = text.split(None, 1)
+        command_name = parts[0].lower()
+        command_args = parts[1] if len(parts) > 1 else ""
+        command = CommandRegistry.get_command(command_name)
+        if not command:
+            return None
+
+        context = {"mode_obj": mode_obj, "runtime": runtime}
+        raw_result = command.handler(context, command_args) or {}
+        response_text = str(raw_result.get("text", "")).strip()
+        system_card = raw_result.get("system_card")
+        if system_card:
+            response_text = f"{self.SYSTEM_CARD_PREFIX}{json.dumps(system_card, ensure_ascii=True)}"
+
+        return {
+            "command": command,
+            "response_text": response_text,
+        }
 
     def _resolve_mode(self, user_message: str, mode: str):
         """Resolve mode, including auto intent routing."""
@@ -446,11 +607,14 @@ class GenerationPipeline:
         ):
             return None
 
-        result = self._tool_registry.execute_tool(
-            tool_call.tool_name,
-            dict(tool_call.parameters or {}),
-            require_confirmation=False
-        )
+        try:
+            result = self._tool_registry.execute_tool(
+                tool_call.tool_name,
+                dict(tool_call.parameters or {}),
+                require_confirmation=False
+            )
+        except Exception as exc:
+            return f"Tool `{tool_call.tool_name}` failed: {exc}"
         if result.get("status") != "ok":
             return f"Tool `{tool_call.tool_name}` failed: {result.get('error') or result.get('message')}"
 
@@ -539,6 +703,17 @@ class GenerationPipeline:
         """
         resolved_mode, mode_obj = self._resolve_mode(user_message, mode)
         runtime = self._resolve_runtime_options(options)
+        slash_result = self._execute_slash_command(user_message, mode_obj, runtime)
+        if slash_result is not None:
+            response_text = slash_result.get("response_text", "")
+            command = slash_result["command"]
+            self._last_turn_meta = {"memory_updated": False}
+            if runtime["memory_enabled"] and command.store_in_memory:
+                self._memory_manager.add_short_term_message('user', user_message)
+                self._memory_manager.add_short_term_message('assistant', response_text)
+                self._memory_manager.save_all()
+            return response_text
+
         datetime_reply = self._direct_datetime_response(user_message)
         if datetime_reply is not None:
             self._last_turn_meta = {"memory_updated": False}
@@ -644,6 +819,27 @@ class GenerationPipeline:
         """
         resolved_mode, mode_obj = self._resolve_mode(user_message, mode)
         runtime = self._resolve_runtime_options(options)
+        slash_result = self._execute_slash_command(user_message, mode_obj, runtime)
+        if slash_result is not None:
+            response_text = slash_result.get("response_text", "")
+            command = slash_result["command"]
+            self._last_turn_meta = {"memory_updated": False}
+            if runtime["memory_enabled"] and command.store_in_memory:
+                self._memory_manager.add_short_term_message('user', user_message)
+                self._memory_manager.add_short_term_message('assistant', response_text)
+                self._memory_manager.save_all()
+            prompt_tokens = self._model_adapter.estimate_tokens(user_message)
+            completion_tokens = self._model_adapter.estimate_tokens(response_text)
+            yield {'content': response_text}
+            yield {
+                'done': True,
+                'prompt_tokens': prompt_tokens,
+                'completion_tokens': completion_tokens,
+                'total_tokens': prompt_tokens + completion_tokens,
+                'memory_updated': False,
+            }
+            return
+
         datetime_reply = self._direct_datetime_response(user_message)
         if datetime_reply is not None:
             self._last_turn_meta = {"memory_updated": False}

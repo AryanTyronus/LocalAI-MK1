@@ -20,6 +20,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const toolLogs = [];
   const toolRegex = /\b(weather|news|stock|ticker|read file|run python|\/tool|nse|bse|nifty|sensex)\b/i;
+  const SYSTEM_CARD_PREFIX = "__SYSTEM_CARD__:";
 
   const markedRenderer = (text) => marked.parse(escapeHtml(text), { breaks: true, gfm: true });
 
@@ -115,15 +116,94 @@ document.addEventListener("DOMContentLoaded", () => {
     bubble.appendChild(footer);
   }
 
-  function createStreamingBubble() {
+  function createStreamingBubble(role = "ai") {
     const row = document.createElement("div");
-    row.className = "msg-row msg-row--ai fade-in";
+    row.className = `msg-row msg-row--${role} fade-in`;
     const bubble = document.createElement("div");
-    bubble.className = "bubble bubble--ai streaming";
+    bubble.className = `bubble bubble--${role === "system" ? "system" : "ai"} streaming`;
     row.appendChild(bubble);
     feed.appendChild(row);
     scrollToBottom();
     return bubble;
+  }
+
+  function renderHelpSystemCard(bubble, payload) {
+    const sections = Array.isArray(payload.sections) ? payload.sections : [];
+    const sectionHtml = sections.map((section) => {
+      const groups = Array.isArray(section.groups) ? section.groups : [];
+      const groupHtml = groups.map((group) => {
+        const items = Array.isArray(group.items) ? group.items : [];
+        const itemHtml = items.map((item) => {
+          if (section.kind === "commands") {
+            return `
+              <li class="help-list__item">
+                <span class="help-list__bullet">○</span>
+                <span class="help-list__content">
+                  <code class="help-pill">${escapeHtml(String(item.name || ""))}</code>
+                  <span class="help-sep">—</span>
+                  <span>${escapeHtml(String(item.description || ""))}</span>
+                  ${item.usage ? `<span class="help-usage">${escapeHtml(String(item.usage))}</span>` : ""}
+                </span>
+              </li>
+            `;
+          }
+          if (section.kind === "tool_triggers") {
+            return `
+              <li class="help-list__item">
+                <span class="help-list__bullet">○</span>
+                <span class="help-list__content">
+                  <code class="help-pill">${escapeHtml(String(item.usage || ""))}</code>
+                  <span class="help-arrow">—</span>
+                  <span>${escapeHtml(String(item.description || item.name || ""))}</span>
+                </span>
+              </li>
+            `;
+          }
+          return `
+            <li class="help-list__item">
+              <span class="help-list__bullet">○</span>
+              <span class="help-list__content">
+                <span class="help-cap-name">${escapeHtml(String(item.name || ""))}</span>
+                <span class="help-sep">—</span>
+                <span>${escapeHtml(String(item.value || item.description || ""))}</span>
+              </span>
+            </li>
+          `;
+        }).join("");
+
+        return `
+          <div class="help-group">
+            <div class="help-group__title">${escapeHtml(String(group.category || "general"))}</div>
+            <ul class="help-list">
+              ${itemHtml || `<li class="help-list__item"><span class="help-list__content">No entries</span></li>`}
+            </ul>
+          </div>
+        `;
+      }).join("");
+
+      return `
+        <section class="system-card__section help-section">
+          <h4 class="help-section__title">${escapeHtml(String(section.title || section.kind || "Section"))}</h4>
+          ${groupHtml || `<div class="system-card__item"><div class="system-card__line">No entries</div></div>`}
+        </section>
+      `;
+    }).join("");
+
+    bubble.classList.remove("bubble--ai", "streaming");
+    bubble.classList.add("bubble--system");
+    const row = bubble.closest(".msg-row");
+    if (row) {
+      row.classList.remove("msg-row--ai");
+      row.classList.add("msg-row--system");
+    }
+    bubble.innerHTML = `
+      <div class="system-card">
+        <div class="system-card__header">
+          <h3>${escapeHtml(String(payload.title || "System"))}</h3>
+        </div>
+        ${sectionHtml || `<div class="system-card__item"><div class="system-card__line">No help entries available.</div></div>`}
+      </div>
+    `;
   }
 
   function looksLikeToolMessage(message) {
@@ -275,7 +355,8 @@ document.addEventListener("DOMContentLoaded", () => {
       toolStatusBubble = addMessage("Working...", "ai", { toolStatus: "Running tool..." });
     }
 
-    const streamBubble = createStreamingBubble();
+    const isSlashCommand = message.startsWith("/");
+    const streamBubble = createStreamingBubble(isSlashCommand ? "system" : "ai");
     let fullText = "";
 
     try {
@@ -306,6 +387,15 @@ document.addEventListener("DOMContentLoaded", () => {
           if (data.startsWith("__TOKENS__:")) {
             doneTokens = JSON.parse(data.slice(11));
             continue;
+          }
+          if (data.startsWith(SYSTEM_CARD_PREFIX)) {
+            try {
+              const payload = JSON.parse(data.slice(SYSTEM_CARD_PREFIX.length));
+              renderHelpSystemCard(streamBubble, payload);
+              continue;
+            } catch (_err) {
+              // Fall through to plain rendering on malformed payload.
+            }
           }
           fullText += data;
           streamBubble.innerHTML = markedRenderer(fullText);

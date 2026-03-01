@@ -1,13 +1,6 @@
 <aside class="sidebar">
-  <div class="brand">
-    <div class="brand__logo">L</div>
-    <div>
-      <h1 class="brand__title">LocalAI</h1>
-      <p class="brand__subtitle">Personal AI Workspace</p>
-    </div>
-  </div>
-
-  <div class="panel-group">
+  <section class="panel-group">
+    <div class="panel-group__title">Workspace</div>
     <label class="field">
       <span class="field__label">Project</span>
       <select id="projectSelect" class="field__control">
@@ -26,9 +19,10 @@
         <option value="agent">agent</option>
       </select>
     </label>
-  </div>
+  </section>
 
-  <div class="panel-group toggles">
+  <section class="panel-group toggles">
+    <div class="panel-group__title">Runtime Features</div>
     <label class="toggle">
       <input id="memoryToggle" type="checkbox" checked>
       <span>Memory</span>
@@ -37,13 +31,5 @@
       <input id="devLogToggle" type="checkbox">
       <span>Dev Logs</span>
     </label>
-  </div>
-
-  <div class="status-card">
-    <span id="modelDot" class="status-dot status-dot--idle"></span>
-    <div>
-      <div class="status-title">Model Status</div>
-      <div id="modelStatusText" class="status-subtitle">Idle</div>
-    </div>
-  </div>
+  </section>
 </aside>

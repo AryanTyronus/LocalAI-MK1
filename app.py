@@ -65,7 +65,7 @@ def chat_api():
         JSON response with "response" field
     """
     # 1. Parse request
-    data = request.get_json()
+    data = request.get_json(silent=True)
     
     if not data:
         return jsonify({"response": "Invalid request format."}), 400
@@ -120,7 +120,7 @@ def chat_stream():
         Server-Sent Events stream with "data" field
     """
     # 1. Parse request
-    data = request.get_json()
+    data = request.get_json(silent=True)
     
     if not data:
         return jsonify({"response": "Invalid request format."}), 400

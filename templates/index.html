@@ -4,8 +4,11 @@
 
 {% block body %}
 <div class="app-shell">
-  {% include "partials/sidebar.html" %}
-  {% include "partials/chat.html" %}
-  {% include "partials/drawer.html" %}
+  {% include "partials/topbar.html" %}
+  <div class="workspace">
+    {% include "partials/sidebar.html" %}
+    {% include "partials/chat.html" %}
+    {% include "partials/drawer.html" %}
+  </div>
 </div>
 {% endblock %}
