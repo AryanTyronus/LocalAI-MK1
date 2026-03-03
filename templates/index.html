@@ -521,6 +521,14 @@
     opacity: 0.4;
     cursor: not-allowed;
   }
+  .mic-btn.listening {
+    box-shadow: 0 0 20px var(--arc-pulse), inset 0 0 20px var(--arc-glow);
+    background: rgba(0, 212, 255, 0.12);
+  }
+  .mic-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
 
   /* Config panel */
   .config-panel {
@@ -885,6 +893,7 @@
       <div class="panel-corner bl"></div><div class="panel-corner br"></div>
       <span class="input-prefix">▶</span>
       <input class="chat-input" id="chatInput" placeholder="Awaiting your command, sir..." autocomplete="off">
+      <button class="send-btn mic-btn" id="micBtn" type="button" style="min-width:110px;padding:0 14px;">MIC OFF</button>
     </div>
     <button class="send-btn panel" id="sendBtn" onclick="sendMessage()" style="min-width:120px">
       TRANSMIT ◈
@@ -1182,10 +1191,111 @@
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  // ─── Voice Input (Web Speech API) ────────────────────────────
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const micBtn = document.getElementById('micBtn');
+  const chatInputEl = document.getElementById('chatInput');
+  let recognition = null;
+  let isListening = false;
+  let pendingInputMode = 'text';
+  const canSpeak = typeof window !== 'undefined' && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined';
+
+  function cancelActiveSpeech(){
+    if(canSpeak){
+      window.speechSynthesis.cancel();
+    }
+  }
+
+  function speakText(text){
+    if(!canSpeak) return;
+    const content = (text || '').trim();
+    if(!content) return;
+    // Prevent overlap with ongoing speech.
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(content);
+    utterance.lang = 'en-US';
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function setMicUI(listening){
+    // Visual feedback for listening state.
+    isListening = listening;
+    micBtn.classList.toggle('listening', listening);
+    micBtn.textContent = listening ? 'LISTENING' : 'MIC OFF';
+    micBtn.setAttribute('aria-label', listening ? 'Stop voice input' : 'Start voice input');
+  }
+
+  function stopListening(){
+    if(recognition && isListening){
+      recognition.stop();
+    }
+    setMicUI(false);
+  }
+
+  if(!SpeechRecognition){
+    // Graceful fallback for unsupported browsers.
+    micBtn.disabled = true;
+    micBtn.textContent = 'NO MIC';
+    micBtn.title = 'Web Speech API is not supported in this browser.';
+  } else {
+    recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.continuous = false;     // Stop after one speech segment.
+    recognition.interimResults = false; // Use final transcript only.
+
+    micBtn.addEventListener('click', () => {
+      if(!isListening){
+        try{
+          recognition.start();
+          setMicUI(true);
+        } catch(_err){
+          // start() may throw if called too quickly; keep UI safe.
+          setMicUI(false);
+        }
+      } else {
+        stopListening();
+      }
+    });
+
+    recognition.addEventListener('result', (event) => {
+      // Put transcript directly into existing LocalAI input.
+      const transcript = (event.results?.[0]?.[0]?.transcript || '').trim();
+      if(transcript){
+        pendingInputMode = 'voice';
+        chatInputEl.value = transcript;
+        chatInputEl.focus();
+      }
+    });
+
+    recognition.addEventListener('speechend', () => {
+      // Auto-stop when user finishes speaking.
+      stopListening();
+    });
+
+    recognition.addEventListener('end', () => {
+      setMicUI(false);
+    });
+
+    recognition.addEventListener('error', () => {
+      setMicUI(false);
+    });
+  }
+
+  // Any manual typing switches input mode back to text.
+  chatInputEl.addEventListener('input', () => {
+    pendingInputMode = 'text';
+  });
+
   async function sendMessage(){
     const input = document.getElementById('chatInput');
     const text = input.value.trim();
     if(!text) return;
+    const inputMode = pendingInputMode === 'voice' ? 'voice' : 'text';
+    pendingInputMode = 'text';
+    cancelActiveSpeech();
+    stopListening();
     input.value = '';
 
     addUserMessage(text);
@@ -1242,6 +1352,10 @@
 
       removeTyping();
       addSystemMessage(escapeHtml(reply).replace(/\n/g,'<br>'));
+      if(inputMode === 'voice'){
+        // Speak only once the full response is assembled and rendered.
+        speakText(reply);
+      }
 
     } catch(e){
       removeTyping();
@@ -1254,6 +1368,7 @@
   }
 
   function clearChat(){
+    cancelActiveSpeech();
     history = [];
     const msgs = document.getElementById('messages');
     msgs.innerHTML = '';
