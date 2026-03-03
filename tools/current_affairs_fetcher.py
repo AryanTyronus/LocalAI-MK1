@@ -19,6 +19,10 @@ class CurrentAffairsFetcher:
     """Fetch live current-affairs facts from Wikipedia summaries."""
 
     WIKI_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary/"
+    REQUEST_HEADERS = {
+        "User-Agent": "LocalAI/1.0 (local assistant; contact: local@localhost)",
+        "Accept": "application/json",
+    }
 
     def __init__(self, timeout_seconds: int = 6):
         self.timeout_seconds = max(1, int(timeout_seconds))
@@ -59,7 +63,7 @@ class CurrentAffairsFetcher:
         page = "President_of_the_United_States"
         url = self.WIKI_SUMMARY_URL + quote(page)
         try:
-            response = requests.get(url, timeout=self.timeout_seconds)
+            response = requests.get(url, headers=self.REQUEST_HEADERS, timeout=self.timeout_seconds)
             response.raise_for_status()
             payload = response.json()
             extract = str(payload.get("extract", "")).strip()

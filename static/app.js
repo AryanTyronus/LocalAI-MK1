@@ -1,7 +1,9 @@
 document.addEventListener("DOMContentLoaded", () => {
   const feed = document.getElementById("feed");
+  const messagesArea = document.querySelector(".messages-area");
   const input = document.getElementById("input");
   const sendBtn = document.getElementById("sendBtn");
+  const charCount = document.getElementById("charCount");
 
   const projectSelect = document.getElementById("projectSelect");
   const modeSelect = document.getElementById("modeSelect");
@@ -10,6 +12,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const modelDot = document.getElementById("modelDot");
   const modelStatusText = document.getElementById("modelStatusText");
   const devLogPanel = document.getElementById("devLogPanel");
+
+  const newChatBtn = document.getElementById("newChatBtn");
+  const settingsBtn = document.getElementById("settingsBtn");
+  const workspaceConfig = document.getElementById("workspaceConfig");
 
   const memoryDrawerBtn = document.getElementById("memoryDrawerBtn");
   const logsDrawerBtn = document.getElementById("logsDrawerBtn");
@@ -31,11 +37,20 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function scrollToBottom() {
-    feed.scrollTop = feed.scrollHeight;
+    if (messagesArea) {
+      messagesArea.scrollTop = messagesArea.scrollHeight;
+    }
+  }
+
+  function nowLabel() {
+    return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   }
 
   function updateSendState() {
     sendBtn.disabled = input.value.trim() === "";
+    if (charCount) {
+      charCount.textContent = `${input.value.length} chars`;
+    }
   }
 
   function setModelStatus(type, text) {
@@ -45,7 +60,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function addDevLog(message) {
-    if (!devLogToggle.checked) return;
+    if (!devLogPanel || !devLogToggle.checked) return;
     const line = document.createElement("div");
     const time = new Date().toLocaleTimeString();
     line.textContent = `[${time}] ${message}`;
@@ -58,6 +73,7 @@ document.addEventListener("DOMContentLoaded", () => {
     localStorage.setItem("localai_mode", modeSelect.value);
     localStorage.setItem("localai_memory", memoryToggle.checked ? "1" : "0");
     localStorage.setItem("localai_devlogs", devLogToggle.checked ? "1" : "0");
+    localStorage.setItem("localai_workspace_open", workspaceConfig.classList.contains("hidden") ? "0" : "1");
   }
 
   function restoreUiState() {
@@ -65,11 +81,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const m = localStorage.getItem("localai_mode");
     const mem = localStorage.getItem("localai_memory");
     const logs = localStorage.getItem("localai_devlogs");
+    const workspaceOpen = localStorage.getItem("localai_workspace_open");
 
     if (p && projectSelect.querySelector(`option[value="${p}"]`)) projectSelect.value = p;
     if (m && modeSelect.querySelector(`option[value="${m}"]`)) modeSelect.value = m;
     if (mem !== null) memoryToggle.checked = mem === "1";
     if (logs !== null) devLogToggle.checked = logs === "1";
+    if (workspaceOpen === "0") workspaceConfig.classList.add("hidden");
+
     devLogPanel.classList.toggle("hidden", !devLogToggle.checked);
   }
 
@@ -81,12 +100,43 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   }
 
-  function addMessage(text, role, options = {}) {
-    const row = document.createElement("div");
-    row.className = `msg-row msg-row--${role} fade-in`;
+  function clearWelcome() {
+    const welcome = feed.querySelector(".welcome");
+    if (welcome) welcome.remove();
+  }
+
+  function createMessageRow(role) {
+    const row = document.createElement("article");
+    row.className = role === "user" ? "msg-row user" : "msg-row";
+
+    const avatar = document.createElement("div");
+    avatar.className = `avatar ${role === "user" ? "user" : "ai"}`;
+    avatar.setAttribute("aria-hidden", "true");
+    avatar.textContent = role === "user" ? "YO" : "AI";
+
+    const col = document.createElement("div");
+    col.className = "msg-col";
 
     const bubble = document.createElement("div");
-    bubble.className = `bubble bubble--${role}`;
+    bubble.className = `bubble ${role === "user" ? "user" : "ai"}`;
+
+    const meta = document.createElement("div");
+    meta.className = "msg-meta";
+    meta.textContent = `${role === "user" ? "You" : "LocalAI"} · ${nowLabel()}`;
+
+    col.appendChild(bubble);
+    col.appendChild(meta);
+    row.appendChild(col);
+    row.appendChild(avatar);
+    feed.appendChild(row);
+
+    scrollToBottom();
+    return { bubble, row };
+  }
+
+  function addMessage(text, role, options = {}) {
+    clearWelcome();
+    const { bubble } = createMessageRow(role);
     bubble.innerHTML = role === "ai" ? markedRenderer(text) : escapeHtml(text);
 
     if (options.memoryUpdated) {
@@ -103,9 +153,6 @@ document.addEventListener("DOMContentLoaded", () => {
       bubble.appendChild(note);
     }
 
-    row.appendChild(bubble);
-    feed.appendChild(row);
-    scrollToBottom();
     return bubble;
   }
 
@@ -116,14 +163,10 @@ document.addEventListener("DOMContentLoaded", () => {
     bubble.appendChild(footer);
   }
 
-  function createStreamingBubble(role = "ai") {
-    const row = document.createElement("div");
-    row.className = `msg-row msg-row--${role} fade-in`;
-    const bubble = document.createElement("div");
-    bubble.className = `bubble bubble--${role === "system" ? "system" : "ai"} streaming`;
-    row.appendChild(bubble);
-    feed.appendChild(row);
-    scrollToBottom();
+  function createStreamingBubble() {
+    clearWelcome();
+    const { bubble } = createMessageRow("ai");
+    bubble.classList.add("streaming");
     return bubble;
   }
 
@@ -135,75 +178,20 @@ document.addEventListener("DOMContentLoaded", () => {
         const items = Array.isArray(group.items) ? group.items : [];
         const itemHtml = items.map((item) => {
           if (section.kind === "commands") {
-            return `
-              <li class="help-list__item">
-                <span class="help-list__bullet">○</span>
-                <span class="help-list__content">
-                  <code class="help-pill">${escapeHtml(String(item.name || ""))}</code>
-                  <span class="help-sep">—</span>
-                  <span>${escapeHtml(String(item.description || ""))}</span>
-                  ${item.usage ? `<span class="help-usage">${escapeHtml(String(item.usage))}</span>` : ""}
-                </span>
-              </li>
-            `;
+            return `<div class="memory-row"><strong>${escapeHtml(String(item.name || ""))}</strong>: ${escapeHtml(String(item.description || ""))}</div>`;
           }
-          if (section.kind === "tool_triggers") {
-            return `
-              <li class="help-list__item">
-                <span class="help-list__bullet">○</span>
-                <span class="help-list__content">
-                  <code class="help-pill">${escapeHtml(String(item.usage || ""))}</code>
-                  <span class="help-arrow">—</span>
-                  <span>${escapeHtml(String(item.description || item.name || ""))}</span>
-                </span>
-              </li>
-            `;
-          }
-          return `
-            <li class="help-list__item">
-              <span class="help-list__bullet">○</span>
-              <span class="help-list__content">
-                <span class="help-cap-name">${escapeHtml(String(item.name || ""))}</span>
-                <span class="help-sep">—</span>
-                <span>${escapeHtml(String(item.value || item.description || ""))}</span>
-              </span>
-            </li>
-          `;
+          return `<div class="memory-row"><strong>${escapeHtml(String(item.name || item.usage || ""))}</strong>: ${escapeHtml(String(item.description || item.value || ""))}</div>`;
         }).join("");
 
-        return `
-          <div class="help-group">
-            <div class="help-group__title">${escapeHtml(String(group.category || "general"))}</div>
-            <ul class="help-list">
-              ${itemHtml || `<li class="help-list__item"><span class="help-list__content">No entries</span></li>`}
-            </ul>
-          </div>
-        `;
+        return `<div class="memory-card"><h4>${escapeHtml(String(group.category || "General"))}</h4>${itemHtml || "<div class='memory-row'>No entries</div>"}</div>`;
       }).join("");
 
-      return `
-        <section class="system-card__section help-section">
-          <h4 class="help-section__title">${escapeHtml(String(section.title || section.kind || "Section"))}</h4>
-          ${groupHtml || `<div class="system-card__item"><div class="system-card__line">No entries</div></div>`}
-        </section>
-      `;
+      return `<section><h4>${escapeHtml(String(section.title || section.kind || "Section"))}</h4>${groupHtml || "<div class='memory-row'>No entries</div>"}</section>`;
     }).join("");
 
-    bubble.classList.remove("bubble--ai", "streaming");
-    bubble.classList.add("bubble--system");
-    const row = bubble.closest(".msg-row");
-    if (row) {
-      row.classList.remove("msg-row--ai");
-      row.classList.add("msg-row--system");
-    }
-    bubble.innerHTML = `
-      <div class="system-card">
-        <div class="system-card__header">
-          <h3>${escapeHtml(String(payload.title || "System"))}</h3>
-        </div>
-        ${sectionHtml || `<div class="system-card__item"><div class="system-card__line">No help entries available.</div></div>`}
-      </div>
-    `;
+    bubble.classList.remove("bubble", "ai", "streaming");
+    bubble.classList.add("bubble", "system");
+    bubble.innerHTML = `<div class="memory-card"><h4>${escapeHtml(String(payload.title || "System"))}</h4>${sectionHtml || "<div class='memory-row'>No help entries available.</div>"}</div>`;
   }
 
   function looksLikeToolMessage(message) {
@@ -297,7 +285,7 @@ document.addEventListener("DOMContentLoaded", () => {
       : `<div class="memory-row">No preferences saved.</div>`;
 
     const diffRows = difficulties.length
-      ? difficulties.map((d) => `<div class="memory-row">• ${escapeHtml(String(d))}</div>`).join("")
+      ? difficulties.map((d) => `<div class="memory-row">- ${escapeHtml(String(d))}</div>`).join("")
       : `<div class="memory-row">No difficulty subjects saved.</div>`;
 
     drawerContent.innerHTML = `
@@ -341,6 +329,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!message) return;
 
     input.value = "";
+    input.style.height = "auto";
     updateSendState();
     setModelStatus("active", "Generating...");
     addMessage(message, "user");
@@ -355,8 +344,7 @@ document.addEventListener("DOMContentLoaded", () => {
       toolStatusBubble = addMessage("Working...", "ai", { toolStatus: "Running tool..." });
     }
 
-    const isSlashCommand = message.startsWith("/");
-    const streamBubble = createStreamingBubble(isSlashCommand ? "system" : "ai");
+    const streamBubble = createStreamingBubble();
     let fullText = "";
 
     try {
@@ -377,26 +365,31 @@ document.addEventListener("DOMContentLoaded", () => {
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
         const lines = chunk.split("\n");
+
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
           const data = line.slice(6);
           if (!data) continue;
+
           if (data.startsWith("__ERROR__:")) {
             throw new Error(data.slice(10));
           }
+
           if (data.startsWith("__TOKENS__:")) {
             doneTokens = JSON.parse(data.slice(11));
             continue;
           }
+
           if (data.startsWith(SYSTEM_CARD_PREFIX)) {
             try {
               const payload = JSON.parse(data.slice(SYSTEM_CARD_PREFIX.length));
               renderHelpSystemCard(streamBubble, payload);
               continue;
             } catch (_err) {
-              // Fall through to plain rendering on malformed payload.
+              // Ignore malformed payload and continue text rendering.
             }
           }
+
           fullText += data;
           streamBubble.innerHTML = markedRenderer(fullText);
           scrollToBottom();
@@ -417,10 +410,11 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
 
-      if (runTool) {
+      if (runTool && toolStatusBubble) {
         const elapsed = Date.now() - start;
         logToolRun(message, elapsed, true);
-        toolStatusBubble.querySelector(".tool-status").textContent = `Tool completed in ${elapsed} ms`;
+        const toolStatus = toolStatusBubble.querySelector(".tool-status");
+        if (toolStatus) toolStatus.textContent = `Tool completed in ${elapsed} ms`;
       }
 
       setModelStatus("active", "Ready");
@@ -428,19 +422,33 @@ document.addEventListener("DOMContentLoaded", () => {
       setModelStatus("error", "Error");
       streamBubble.classList.remove("streaming");
       streamBubble.innerHTML = markedRenderer(`Error: ${String(err)}`);
+
       if (runTool && toolStatusBubble) {
         const elapsed = Date.now() - start;
         logToolRun(message, elapsed, false);
-        toolStatusBubble.querySelector(".tool-status").textContent = `Tool failed in ${elapsed} ms`;
+        const toolStatus = toolStatusBubble.querySelector(".tool-status");
+        if (toolStatus) toolStatus.textContent = `Tool failed in ${elapsed} ms`;
       }
+
       addDevLog(`stream error=${String(err)}`);
     }
+  }
+
+  function clearConversation() {
+    feed.innerHTML = `
+      <div class="welcome">
+        <div class="welcome-glyph" aria-hidden="true">◈</div>
+        <h2>Welcome to LocalAI</h2>
+        <p>Your private assistant running locally. Ask coding, research, or tool-powered questions.</p>
+      </div>
+    `;
+    setModelStatus("idle", "Idle");
   }
 
   input.addEventListener("input", () => {
     updateSendState();
     input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 170)}px`;
+    input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
   });
 
   input.addEventListener("keydown", (e) => {
@@ -451,11 +459,18 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   sendBtn.addEventListener("click", sendMessageStream);
+  newChatBtn.addEventListener("click", clearConversation);
+
   projectSelect.addEventListener("change", persistUiState);
   modeSelect.addEventListener("change", persistUiState);
   memoryToggle.addEventListener("change", persistUiState);
   devLogToggle.addEventListener("change", () => {
     devLogPanel.classList.toggle("hidden", !devLogToggle.checked);
+    persistUiState();
+  });
+
+  settingsBtn.addEventListener("click", () => {
+    workspaceConfig.classList.toggle("hidden");
     persistUiState();
   });
 

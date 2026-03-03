@@ -1,14 +1,1287 @@
-{% extends "base.html" %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J.A.R.V.I.S. — Local AI Interface</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --arc: #00d4ff;
+    --arc-dim: #0088aa;
+    --arc-glow: rgba(0, 212, 255, 0.15);
+    --arc-pulse: rgba(0, 212, 255, 0.4);
+    --danger: #ff4444;
+    --warn: #ffaa00;
+    --bg: #020b12;
+    --bg2: #030f1a;
+    --panel: rgba(0, 30, 50, 0.7);
+    --panel-border: rgba(0, 212, 255, 0.2);
+    --text: #c8eeff;
+    --text-dim: rgba(200, 238, 255, 0.4);
+    --mono: 'Share Tech Mono', monospace;
+    --display: 'Orbitron', sans-serif;
+    --ui: 'Rajdhani', sans-serif;
+  }
 
-{% block title %}LocalAI{% endblock %}
+  * { margin: 0; padding: 0; box-sizing: border-box; }
 
-{% block body %}
-<div class="app-shell">
-  {% include "partials/topbar.html" %}
-  <div class="workspace">
-    {% include "partials/sidebar.html" %}
-    {% include "partials/chat.html" %}
-    {% include "partials/drawer.html" %}
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    height: 100vh;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Animated grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    animation: gridPulse 8s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(ellipse 80% 50% at 50% 50%, rgba(0, 100, 180, 0.08) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  @keyframes gridPulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+  }
+
+  /* Scan line effect */
+  .scanline {
+    position: fixed;
+    top: -100%;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--arc), transparent);
+    animation: scan 6s linear infinite;
+    pointer-events: none;
+    z-index: 1000;
+    opacity: 0.4;
+  }
+
+  @keyframes scan {
+    0% { top: -2px; }
+    100% { top: 100%; }
+  }
+
+  /* Layout */
+  .app {
+    display: grid;
+    grid-template-columns: 260px 1fr 240px;
+    grid-template-rows: 60px 1fr 80px;
+    height: 100vh;
+    gap: 1px;
+    padding: 8px;
+    gap: 8px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Header */
+  .header {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .header::before {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--arc), transparent);
+    animation: shimmer 3s ease-in-out infinite;
+  }
+
+  @keyframes shimmer {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .arc-reactor {
+    width: 36px;
+    height: 36px;
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .arc-reactor svg {
+    width: 100%;
+    height: 100%;
+    animation: reactorSpin 4s linear infinite;
+  }
+
+  @keyframes reactorSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  .logo-text {
+    font-family: var(--display);
+    font-size: 18px;
+    font-weight: 900;
+    letter-spacing: 6px;
+    color: var(--arc);
+    text-shadow: 0 0 20px var(--arc-pulse);
+  }
+
+  .logo-sub {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--arc-dim);
+    letter-spacing: 3px;
+    margin-top: 2px;
+  }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .status-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #00ff88;
+    box-shadow: 0 0 8px #00ff88;
+    animation: blink 2s ease-in-out infinite;
+  }
+
+  .status-dot.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .time-display {
+    font-family: var(--display);
+    font-size: 13px;
+    color: var(--arc);
+    letter-spacing: 2px;
+  }
+
+  /* Panels */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .panel-corner {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    border-color: var(--arc);
+    border-style: solid;
+    z-index: 2;
+  }
+  .panel-corner.tl { top: 4px; left: 4px; border-width: 2px 0 0 2px; }
+  .panel-corner.tr { top: 4px; right: 4px; border-width: 2px 2px 0 0; }
+  .panel-corner.bl { bottom: 4px; left: 4px; border-width: 0 0 2px 2px; }
+  .panel-corner.br { bottom: 4px; right: 4px; border-width: 0 2px 2px 0; }
+
+  .panel-label {
+    font-family: var(--display);
+    font-size: 9px;
+    letter-spacing: 3px;
+    color: var(--arc-dim);
+    padding: 10px 16px 6px;
+    border-bottom: 1px solid var(--panel-border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .panel-label::before {
+    content: '';
+    width: 4px;
+    height: 4px;
+    background: var(--arc);
+    transform: rotate(45deg);
+    flex-shrink: 0;
+  }
+
+  /* Left Panel */
+  .left-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow: hidden;
+  }
+
+  .left-panel > .panel {
+    flex-shrink: 0;
+  }
+
+  /* System stats */
+  .stat-grid {
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .stat-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .stat-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 2px;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .stat-bar {
+    height: 3px;
+    background: rgba(0, 212, 255, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .stat-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--arc-dim), var(--arc));
+    border-radius: 2px;
+    position: relative;
+    transition: width 1s ease;
+  }
+
+  .stat-fill::after {
+    content: '';
+    position: absolute;
+    right: 0; top: -1px; bottom: -1px;
+    width: 6px;
+    background: white;
+    border-radius: 2px;
+    box-shadow: 0 0 8px var(--arc);
+  }
+
+  /* Hex display */
+  .hex-display {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .hex-ring {
+    position: relative;
+    width: 100px;
+    height: 100px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .hex-ring svg {
+    position: absolute;
+    inset: 0;
+  }
+
+  .hex-center {
+    font-family: var(--display);
+    font-size: 11px;
+    text-align: center;
+    color: var(--arc);
+    text-shadow: 0 0 10px var(--arc);
+    z-index: 1;
+    letter-spacing: 1px;
+    line-height: 1.4;
+  }
+
+  /* Chat area */
+  .chat-panel {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--arc-dim) transparent;
+  }
+
+  .messages::-webkit-scrollbar { width: 3px; }
+  .messages::-webkit-scrollbar-track { background: transparent; }
+  .messages::-webkit-scrollbar-thumb { background: var(--arc-dim); border-radius: 2px; }
+
+  .message {
+    display: flex;
+    gap: 12px;
+    animation: msgIn 0.4s ease forwards;
+  }
+
+  @keyframes msgIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .message.user { flex-direction: row-reverse; }
+
+  .msg-avatar {
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--display);
+    font-size: 9px;
+    letter-spacing: 1px;
+    color: var(--arc);
+    border: 1px solid var(--panel-border);
+    background: var(--bg2);
+    position: relative;
+  }
+
+  .msg-avatar::before, .msg-avatar::after {
+    content: '';
+    position: absolute;
+    width: 6px; height: 6px;
+    border-color: var(--arc);
+    border-style: solid;
+  }
+  .msg-avatar::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; }
+  .msg-avatar::after { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; }
+
+  .msg-bubble {
+    max-width: 75%;
+    padding: 12px 16px;
+    background: rgba(0, 20, 40, 0.8);
+    border: 1px solid var(--panel-border);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text);
+    position: relative;
+  }
+
+  .message.user .msg-bubble {
+    background: rgba(0, 80, 120, 0.3);
+    border-color: rgba(0, 212, 255, 0.35);
+    color: var(--arc);
+  }
+
+  .msg-meta {
+    font-size: 9px;
+    color: var(--text-dim);
+    margin-top: 6px;
+    letter-spacing: 1px;
+    display: flex;
+    gap: 10px;
+  }
+
+  .message.user .msg-meta { flex-direction: row-reverse; }
+
+  /* Typing indicator */
+  .typing {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 12px 16px;
+  }
+
+  .typing span {
+    width: 4px;
+    height: 4px;
+    background: var(--arc);
+    border-radius: 50%;
+    animation: typingDot 1.2s ease-in-out infinite;
+    box-shadow: 0 0 6px var(--arc);
+  }
+
+  .typing span:nth-child(2) { animation-delay: 0.2s; }
+  .typing span:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes typingDot {
+    0%, 100% { transform: translateY(0); opacity: 0.4; }
+    50% { transform: translateY(-4px); opacity: 1; }
+  }
+
+  /* Input area */
+  .input-row {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  .input-panel {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 20px;
+  }
+
+  .input-prefix {
+    font-family: var(--display);
+    font-size: 11px;
+    color: var(--arc);
+    letter-spacing: 2px;
+    flex-shrink: 0;
+  }
+
+  .chat-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text);
+    caret-color: var(--arc);
+  }
+
+  .chat-input::placeholder {
+    color: rgba(0, 212, 255, 0.2);
+    font-style: italic;
+  }
+
+  .send-btn {
+    padding: 0 24px;
+    background: transparent;
+    border: 1px solid var(--arc);
+    color: var(--arc);
+    font-family: var(--display);
+    font-size: 10px;
+    letter-spacing: 3px;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .send-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--arc-glow);
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  .send-btn:hover::before { opacity: 1; }
+  .send-btn:hover { box-shadow: 0 0 20px var(--arc-pulse), inset 0 0 20px var(--arc-glow); }
+
+  .send-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* Config panel */
+  .config-panel {
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .config-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .config-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 2px;
+  }
+
+  .config-input {
+    background: rgba(0, 212, 255, 0.05);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 5px 8px;
+    outline: none;
+    transition: border-color 0.2s;
+    width: 100%;
+  }
+
+  .config-input:focus {
+    border-color: var(--arc);
+    box-shadow: 0 0 10px rgba(0, 212, 255, 0.1);
+  }
+
+  .config-input option {
+    background: var(--bg2);
+    color: var(--text);
+  }
+
+  /* Right panel - metrics */
+  .right-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow: hidden;
+  }
+
+  .right-panel > .panel {
+    flex-shrink: 0;
+  }
+
+  .metric-list {
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .metric-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(0, 212, 255, 0.06);
+  }
+
+  .metric-item:last-child { border-bottom: none; }
+  .metric-key { color: var(--text-dim); }
+  .metric-val { color: var(--arc); }
+
+  /* Waveform */
+  .waveform {
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    height: 60px;
+  }
+
+  .wave-bar {
+    width: 3px;
+    background: var(--arc);
+    border-radius: 2px;
+    opacity: 0.6;
+    animation: wave 1.2s ease-in-out infinite;
+  }
+
+  @keyframes wave {
+    0%, 100% { height: 4px; opacity: 0.3; }
+    50% { height: var(--h); opacity: 0.9; }
+  }
+
+  /* Scrollable panel content */
+  .scroll-content {
+    overflow-y: auto;
+    flex: 1;
+    scrollbar-width: thin;
+    scrollbar-color: var(--arc-dim) transparent;
+  }
+
+  .scroll-content::-webkit-scrollbar { width: 2px; }
+  .scroll-content::-webkit-scrollbar-thumb { background: var(--arc-dim); }
+
+  /* Welcome message */
+  .welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 12px;
+    opacity: 0.5;
+  }
+
+  .welcome-title {
+    font-family: var(--display);
+    font-size: 22px;
+    font-weight: 900;
+    letter-spacing: 8px;
+    color: var(--arc);
+    text-shadow: 0 0 30px var(--arc);
+  }
+
+  .welcome-sub {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--arc-dim);
+    letter-spacing: 3px;
+  }
+
+  /* Log entries */
+  .log-panel { padding: 10px 14px; }
+  .log-entry {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    padding: 2px 0;
+    border-bottom: 1px solid rgba(0,212,255,0.04);
+    display: flex;
+    gap: 8px;
+  }
+  .log-entry .log-time { color: rgba(0, 212, 255, 0.25); flex-shrink: 0; }
+  .log-entry.ok .log-msg { color: rgba(0, 255, 136, 0.6); }
+  .log-entry.warn .log-msg { color: rgba(255, 170, 0, 0.6); }
+
+  select.config-input { cursor: pointer; }
+
+  /* Overlay glow corners on main panels */
+  .glow-panel {
+    box-shadow: inset 0 0 40px rgba(0, 212, 255, 0.02);
+  }
+
+  .connecting-pulse {
+    animation: connPulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes connPulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+</style>
+</head>
+<body>
+
+<div class="scanline"></div>
+
+<div class="app">
+
+  <!-- HEADER -->
+  <header class="header panel">
+    <div class="panel-corner tl"></div>
+    <div class="panel-corner tr"></div>
+    <div class="panel-corner bl"></div>
+    <div class="panel-corner br"></div>
+    <div class="logo">
+      <div class="arc-reactor">
+        <svg viewBox="0 0 36 36" fill="none">
+          <circle cx="18" cy="18" r="16" stroke="rgba(0,212,255,0.2)" stroke-width="1"/>
+          <circle cx="18" cy="18" r="10" stroke="rgba(0,212,255,0.4)" stroke-width="1" stroke-dasharray="4 2"/>
+          <circle cx="18" cy="18" r="5" fill="rgba(0,212,255,0.15)" stroke="#00d4ff" stroke-width="1.5"/>
+          <circle cx="18" cy="18" r="2" fill="#00d4ff" filter="url(#glow)"/>
+          <path d="M18 2 L20 8 L18 6 L16 8 Z" fill="rgba(0,212,255,0.6)"/>
+          <path d="M34 18 L28 20 L30 18 L28 16 Z" fill="rgba(0,212,255,0.6)"/>
+          <path d="M18 34 L16 28 L18 30 L20 28 Z" fill="rgba(0,212,255,0.6)"/>
+          <path d="M2 18 L8 16 L6 18 L8 20 Z" fill="rgba(0,212,255,0.6)"/>
+          <defs>
+            <filter id="glow">
+              <feGaussianBlur stdDeviation="2" result="blur"/>
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+        </svg>
+      </div>
+      <div>
+        <div class="logo-text">J.A.R.V.I.S.</div>
+        <div class="logo-sub">Just A Rather Very Intelligent System</div>
+      </div>
+    </div>
+
+    <div class="status-bar">
+      <div class="status-item">
+        <div class="status-dot" id="connDot"></div>
+        <span id="connStatus">OFFLINE</span>
+      </div>
+      <div class="status-item">
+        <div class="status-dot warn"></div>
+        <span>LOCAL NODE</span>
+      </div>
+      <div class="status-item">
+        <span>UPTIME: <span id="uptime">00:00:00</span></span>
+      </div>
+      <div class="time-display" id="clock">--:--:--</div>
+    </div>
+  </header>
+
+  <!-- LEFT PANEL -->
+  <aside class="left-panel">
+
+    <!-- System stats -->
+    <div class="panel glow-panel">
+      <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+      <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+      <div class="panel-label">SYSTEM DIAGNOSTICS</div>
+      <div class="stat-grid" id="statGrid">
+        <div class="stat-row">
+          <div class="stat-label"><span>NEURAL LOAD</span><span id="cpuVal">--</span></div>
+          <div class="stat-bar"><div class="stat-fill" id="cpuBar" style="width:0%"></div></div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-label"><span>MEMORY ALLOC</span><span id="memVal">--</span></div>
+          <div class="stat-bar"><div class="stat-fill" id="memBar" style="width:0%"></div></div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-label"><span>INFERENCE BUS</span><span id="gpuVal">--</span></div>
+          <div class="stat-bar"><div class="stat-fill" id="gpuBar" style="width:0%"></div></div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-label"><span>THERMAL</span><span id="tmpVal">--</span></div>
+          <div class="stat-bar"><div class="stat-fill" id="tmpBar" style="width:0%"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Arc reactor visual -->
+    <div class="panel glow-panel">
+      <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+      <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+      <div class="panel-label">CORE STATUS</div>
+      <div class="hex-display">
+        <div class="hex-ring">
+          <svg viewBox="0 0 100 100" fill="none">
+            <circle cx="50" cy="50" r="44" stroke="rgba(0,212,255,0.08)" stroke-width="1"/>
+            <circle cx="50" cy="50" r="36" stroke="rgba(0,212,255,0.15)" stroke-width="1" stroke-dasharray="6 3" id="ring1"/>
+            <circle cx="50" cy="50" r="27" stroke="rgba(0,212,255,0.25)" stroke-width="1.5"/>
+            <circle cx="50" cy="50" r="18" stroke="var(--arc)" stroke-width="1" stroke-dasharray="3 5" id="ring2"/>
+            <circle cx="50" cy="50" r="8" fill="rgba(0,212,255,0.1)" stroke="var(--arc)" stroke-width="1.5"/>
+            <circle cx="50" cy="50" r="3" fill="var(--arc)"/>
+          </svg>
+          <div class="hex-center" id="coreStatus">STANDBY<br>MODE</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Config -->
+    <div class="panel glow-panel" style="flex:1">
+      <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+      <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+      <div class="panel-label">INTERFACE CONFIG</div>
+      <div class="config-panel">
+        <div class="config-field">
+          <div class="config-label">ENDPOINT URL</div>
+          <input class="config-input" id="endpointUrl" type="text" value="/chat" placeholder="/chat or http://localhost:11434/api/chat">
+        </div>
+        <div class="config-field">
+          <div class="config-label">AI FORMAT</div>
+          <select class="config-input" id="apiFormat">
+            <option value="localai">LocalAI Backend</option>
+            <option value="ollama">Ollama</option>
+            <option value="openai">OpenAI Compatible</option>
+            <option value="lmstudio">LM Studio</option>
+          </select>
+        </div>
+        <div class="config-field">
+          <div class="config-label">MODEL DESIGNATION</div>
+          <input class="config-input" id="modelName" type="text" value="llama3.2" placeholder="model name">
+        </div>
+        <div class="config-field">
+          <div class="config-label">API KEY (optional)</div>
+          <input class="config-input" id="apiKey" type="password" placeholder="sk-...">
+        </div>
+        <div class="config-field">
+          <div class="config-label">SYSTEM PERSONA</div>
+          <textarea class="config-input" id="systemPrompt" rows="3" style="resize:none;font-size:10px;line-height:1.5">You are J.A.R.V.I.S., Tony Stark's AI assistant. Be helpful, precise, and slightly witty. Address the user as "sir" or "ma'am" occasionally.</textarea>
+        </div>
+        <button class="send-btn" id="connectBtn" style="width:100%;padding:8px" onclick="testConnection()">◈ INITIALIZE</button>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- CHAT PANEL -->
+  <main class="chat-panel panel glow-panel">
+    <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+    <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+    <div class="panel-label">COMMUNICATION CHANNEL // ENCRYPTED</div>
+    <div class="messages" id="messages">
+      <div class="welcome" id="welcome">
+        <div class="welcome-title">J.A.R.V.I.S.</div>
+        <div class="welcome-sub">AWAITING AUTHORIZATION</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--arc-dim);text-align:center;line-height:2">
+          Configure your local AI endpoint<br>and press INITIALIZE to begin
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- RIGHT PANEL -->
+  <aside class="right-panel">
+    <!-- Waveform -->
+    <div class="panel glow-panel">
+      <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+      <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+      <div class="panel-label">SIGNAL MONITOR</div>
+      <div class="waveform" id="waveform"></div>
+    </div>
+
+    <!-- Session metrics -->
+    <div class="panel glow-panel">
+      <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+      <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+      <div class="panel-label">SESSION METRICS</div>
+      <div class="metric-list">
+        <div class="metric-item"><span class="metric-key">EXCHANGES</span><span class="metric-val" id="mExchanges">0</span></div>
+        <div class="metric-item"><span class="metric-key">TOKENS</span><span class="metric-val" id="mTokens">~0</span></div>
+        <div class="metric-item"><span class="metric-key">AVG LATENCY</span><span class="metric-val" id="mLatency">--</span></div>
+        <div class="metric-item"><span class="metric-key">CONTEXT SIZE</span><span class="metric-val" id="mCtx">0</span></div>
+        <div class="metric-item"><span class="metric-key">STATUS</span><span class="metric-val" id="mStatus">OFFLINE</span></div>
+      </div>
+    </div>
+
+    <!-- Activity log -->
+    <div class="panel glow-panel" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+      <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+      <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+      <div class="panel-label">ACTIVITY LOG</div>
+      <div class="scroll-content" style="padding:8px 14px;display:flex;flex-direction:column;gap:2px" id="logPanel"></div>
+    </div>
+  </aside>
+
+  <!-- INPUT ROW -->
+  <div class="input-row">
+    <div class="input-panel panel glow-panel" style="flex:1">
+      <div class="panel-corner tl"></div><div class="panel-corner tr"></div>
+      <div class="panel-corner bl"></div><div class="panel-corner br"></div>
+      <span class="input-prefix">▶</span>
+      <input class="chat-input" id="chatInput" placeholder="Awaiting your command, sir..." autocomplete="off">
+    </div>
+    <button class="send-btn panel" id="sendBtn" onclick="sendMessage()" style="min-width:120px">
+      TRANSMIT ◈
+    </button>
+    <button class="send-btn panel" onclick="clearChat()" style="min-width:80px;border-color:rgba(255,68,68,0.4);color:rgba(255,68,68,0.7)">
+      CLEAR
+    </button>
   </div>
+
 </div>
-{% endblock %}
+
+<script>
+  // ─── Clock & Uptime ───────────────────────────────────────────
+  const startTime = Date.now();
+  function pad(n){ return String(n).padStart(2,'0'); }
+  function updateClock(){
+    const now = new Date();
+    document.getElementById('clock').textContent =
+      `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const el = Math.floor((Date.now()-startTime)/1000);
+    const h=Math.floor(el/3600), m=Math.floor((el%3600)/60), s=el%60;
+    document.getElementById('uptime').textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  // ─── Waveform ─────────────────────────────────────────────────
+  const wf = document.getElementById('waveform');
+  for(let i=0;i<30;i++){
+    const b = document.createElement('div');
+    b.className = 'wave-bar';
+    const h = 4 + Math.random()*28;
+    b.style.setProperty('--h', h+'px');
+    b.style.animationDelay = (Math.random()*1.2)+'s';
+    b.style.animationDuration = (0.8+Math.random()*0.8)+'s';
+    b.style.height = '4px';
+    wf.appendChild(b);
+  }
+
+  // ─── Ring animation ───────────────────────────────────────────
+  let r1=0,r2=0;
+  setInterval(()=>{
+    r1=(r1+0.5)%360;
+    r2=(r2-0.8+360)%360;
+    document.getElementById('ring1').style.transform=`rotate(${r1}deg)`;
+    document.getElementById('ring1').style.transformOrigin='50px 50px';
+    document.getElementById('ring2').style.transform=`rotate(${r2}deg)`;
+    document.getElementById('ring2').style.transformOrigin='50px 50px';
+  }, 50);
+
+  // ─── Log ──────────────────────────────────────────────────────
+  function clampPercent(v){
+    const n = Number(v);
+    if(Number.isNaN(n)) return 0;
+    return Math.max(0, Math.min(100, n));
+  }
+
+  function formatLocalTime(iso){
+    if(!iso) return '--:--:--';
+    const d = new Date(iso);
+    if(Number.isNaN(d.getTime())) return '--:--:--';
+    return d.toLocaleTimeString();
+  }
+
+  // ─── State ────────────────────────────────────────────────────
+  let connected = false;
+  let history = [];
+
+  function getBackendBaseUrl(){
+    const raw = (document.getElementById('endpointUrl').value || '').trim();
+    if(!raw || raw.startsWith('/')) return '';
+    return raw.replace(/\/chat(?:\/stream)?\/?$/, '');
+  }
+
+  function backendUrl(path){
+    const base = getBackendBaseUrl();
+    if(!base) return path;
+    return `${base}${path}`;
+  }
+
+  function buildLocalAIPingUrl(rawUrl){
+    const url = (rawUrl || '').trim();
+    if(!url) return '/app';
+    if(url.startsWith('/')){
+      return url.replace(/\/chat\/?$/, '/app');
+    }
+    return url.replace(/\/chat\/?$/, '/app');
+  }
+
+  function setConnected(v){
+    connected = v;
+    document.getElementById('connDot').className = 'status-dot' + (v ? '' : ' warn');
+    document.getElementById('connStatus').textContent = v ? 'ONLINE' : 'OFFLINE';
+  }
+
+  function setWaveformMode(status){
+    const bars = document.querySelectorAll('.wave-bar');
+    const processing = status === 'PROCESSING';
+    bars.forEach((bar, i) => {
+      if(processing){
+        bar.style.animationPlayState = 'running';
+        bar.style.opacity = '0.85';
+        bar.style.animationDuration = `${0.8 + (i % 5) * 0.1}s`;
+      } else {
+        bar.style.animationPlayState = 'running';
+        bar.style.opacity = '0.35';
+        bar.style.animationDuration = `${2.2 + (i % 6) * 0.18}s`;
+        bar.style.setProperty('--h', `${6 + (i % 4) * 2}px`);
+      }
+    });
+  }
+
+  function applySystemStatus(status){
+    const normalized = (status || 'OFFLINE').toUpperCase();
+    const isOnline = normalized !== 'OFFLINE';
+    setConnected(isOnline);
+    document.getElementById('coreStatus').innerHTML = `${normalized}<br>MODE`;
+    document.getElementById('mStatus').textContent = normalized;
+    if(normalized === 'ERROR'){
+      document.getElementById('connDot').className = 'status-dot warn';
+      document.getElementById('connStatus').textContent = 'ERROR';
+    }
+    setWaveformMode(normalized);
+  }
+
+  async function pollSystemStatus(){
+    try{
+      const res = await fetch(backendUrl('/system/status'), { method: 'GET', signal: AbortSignal.timeout(2000) });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      applySystemStatus(data.status || 'STANDBY');
+    } catch(_) {
+      applySystemStatus('OFFLINE');
+    }
+  }
+
+  async function pollSystemMetrics(){
+    try{
+      const res = await fetch(backendUrl('/system/metrics'), { method: 'GET', signal: AbortSignal.timeout(2000) });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      const cpu = clampPercent(data.cpu_percent);
+      const ram = clampPercent(data.ram_percent);
+      const proc = clampPercent(data.process_cpu_percent);
+      const temp = data.temperature;
+
+      document.getElementById('cpuVal').textContent = `${Math.round(cpu)}%`;
+      document.getElementById('memVal').textContent = `${Math.round(ram)}%`;
+      document.getElementById('gpuVal').textContent = `${Math.round(proc)}%`;
+      document.getElementById('cpuBar').style.width = `${cpu}%`;
+      document.getElementById('memBar').style.width = `${ram}%`;
+      document.getElementById('gpuBar').style.width = `${proc}%`;
+
+      if(temp === null || temp === undefined || Number.isNaN(Number(temp))){
+        document.getElementById('tmpVal').textContent = '--';
+        document.getElementById('tmpBar').style.width = `${Math.round(cpu)}%`;
+      } else {
+        const t = Number(temp);
+        document.getElementById('tmpVal').textContent = `${Math.round(t)}°`;
+        document.getElementById('tmpBar').style.width = `${clampPercent((t / 100) * 100)}%`;
+      }
+    } catch(_) {
+      // Keep last shown values on transient failures.
+    }
+  }
+
+  async function pollSessionMetrics(){
+    try{
+      const res = await fetch(backendUrl('/session/metrics'), { method: 'GET', signal: AbortSignal.timeout(2000) });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      document.getElementById('mExchanges').textContent = `${data.exchanges ?? 0}`;
+      document.getElementById('mTokens').textContent = `~${data.tokens ?? 0}`;
+      const avg = Number(data.avg_latency_ms || 0);
+      document.getElementById('mLatency').textContent = avg > 0 ? `${Math.round(avg)}ms` : '--';
+      document.getElementById('mCtx').textContent = `${data.context_size ?? 0}`;
+    } catch(_) {
+      // Keep current values.
+    }
+  }
+
+  function renderLogs(logs){
+    const panel = document.getElementById('logPanel');
+    panel.innerHTML = '';
+    for(const item of logs || []){
+      const msg = (item?.message || '').trim();
+      const ts = formatLocalTime(item?.timestamp);
+      let type = '';
+      const lower = msg.toLowerCase();
+      if(lower.includes('error') || lower.includes('failed')) type = 'warn';
+      else if(lower.includes('loaded') || lower.includes('received') || lower.includes('started')) type = 'ok';
+      const el = document.createElement('div');
+      el.className = `log-entry ${type}`;
+      el.innerHTML = `<span class="log-time">${ts}</span><span class="log-msg">${escapeHtml(msg)}</span>`;
+      panel.appendChild(el);
+    }
+    panel.scrollTop = panel.scrollHeight;
+  }
+
+  async function pollSystemLogs(){
+    try{
+      const res = await fetch(backendUrl('/system/logs'), { method: 'GET', signal: AbortSignal.timeout(2000) });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      renderLogs(data.logs || []);
+    } catch(_) {
+      // Keep current logs.
+    }
+  }
+
+  async function testConnection(){
+    const btn = document.getElementById('connectBtn');
+    btn.textContent = '◌ CONNECTING...';
+    btn.disabled = true;
+    try {
+      const url = document.getElementById('endpointUrl').value;
+      const fmt = document.getElementById('apiFormat').value;
+      // Just try a ping-style check
+      const pingUrl =
+        fmt === 'localai'
+          ? buildLocalAIPingUrl(url)
+          : (fmt === 'ollama' ? url.replace('/api/chat','/api/tags') : url);
+      const res = await fetch(pingUrl, {method:'GET', signal: AbortSignal.timeout(3000)});
+      if(res.ok){
+        setConnected(true);
+        document.getElementById('welcome').style.display = 'none';
+        addSystemMessage("Good day. J.A.R.V.I.S. systems are online. All neural pathways are operational. How may I assist you?");
+      } else {
+        throw new Error('Non-OK response');
+      }
+    } catch(e) {
+      setConnected(false);
+      document.getElementById('welcome').style.display = 'none';
+      addSystemMessage("Connection check failed. Verify endpoint and retry initialization.");
+    }
+    btn.textContent = '◈ REINITIALIZE';
+    btn.disabled = false;
+  }
+
+  function addSystemMessage(text){
+    const msgs = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = 'message assistant';
+    div.innerHTML = `
+      <div class="msg-avatar">JAR</div>
+      <div>
+        <div class="msg-bubble">${text}</div>
+        <div class="msg-meta">
+          <span>J.A.R.V.I.S.</span>
+          <span>${new Date().toLocaleTimeString()}</span>
+        </div>
+      </div>`;
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function addUserMessage(text){
+    const msgs = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = 'message user';
+    div.innerHTML = `
+      <div class="msg-avatar">YOU</div>
+      <div>
+        <div class="msg-bubble">${escapeHtml(text)}</div>
+        <div class="msg-meta">
+          <span>AUTHORIZED USER</span>
+          <span>${new Date().toLocaleTimeString()}</span>
+        </div>
+      </div>`;
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function showTyping(){
+    const msgs = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = 'message assistant';
+    div.id = 'typingIndicator';
+    div.innerHTML = `
+      <div class="msg-avatar">JAR</div>
+      <div class="msg-bubble">
+        <div class="typing"><span></span><span></span><span></span></div>
+      </div>`;
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function removeTyping(){
+    const t = document.getElementById('typingIndicator');
+    if(t) t.remove();
+  }
+
+  function escapeHtml(s){
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  async function sendMessage(){
+    const input = document.getElementById('chatInput');
+    const text = input.value.trim();
+    if(!text) return;
+    input.value = '';
+
+    addUserMessage(text);
+    showTyping();
+
+    document.getElementById('sendBtn').disabled = true;
+
+    history.push({ role: 'user', content: text });
+
+    const url = document.getElementById('endpointUrl').value;
+    const fmt = document.getElementById('apiFormat').value;
+    const model = document.getElementById('modelName').value;
+    const apiKey = document.getElementById('apiKey').value;
+    const systemPrompt = document.getElementById('systemPrompt').value;
+
+    const t0 = Date.now();
+    try {
+      let body, headers = { 'Content-Type': 'application/json' };
+      if(apiKey) headers['Authorization'] = 'Bearer '+apiKey;
+
+      const msgs = systemPrompt
+        ? [{ role:'system', content: systemPrompt }, ...history]
+        : history;
+
+      if(fmt === 'localai'){
+        body = JSON.stringify({
+          message: text,
+          mode: 'chat',
+          options: { system_prompt: systemPrompt || '' }
+        });
+      } else if(fmt === 'ollama'){
+        body = JSON.stringify({ model, messages: msgs, stream: false });
+      } else {
+        // OpenAI-compatible (LM Studio also uses this)
+        body = JSON.stringify({ model, messages: msgs, stream: false });
+      }
+
+      const res = await fetch(url, { method:'POST', headers, body });
+      const data = await res.json();
+      if(!res.ok){
+        throw new Error(data?.response || data?.error || `HTTP ${res.status}`);
+      }
+
+      let reply = '';
+      if(fmt === 'localai'){
+        reply = data.response || '[No response]';
+      } else if(fmt === 'ollama'){
+        reply = data.message?.content || data.response || '[No response]';
+      } else {
+        reply = data.choices?.[0]?.message?.content || '[No response]';
+      }
+
+      history.push({ role: 'assistant', content: reply });
+
+      removeTyping();
+      addSystemMessage(escapeHtml(reply).replace(/\n/g,'<br>'));
+
+    } catch(e){
+      removeTyping();
+      history.pop();
+      addSystemMessage(`⚠ Connection error: ${escapeHtml(e.message)}. Please verify your endpoint configuration.`);
+    }
+
+    document.getElementById('sendBtn').disabled = false;
+    input.focus();
+  }
+
+  function clearChat(){
+    history = [];
+    const msgs = document.getElementById('messages');
+    msgs.innerHTML = '';
+    if(!connected){
+      msgs.innerHTML = `<div class="welcome" id="welcome">
+        <div class="welcome-title">J.A.R.V.I.S.</div>
+        <div class="welcome-sub">AWAITING AUTHORIZATION</div>
+      </div>`;
+    } else {
+      addSystemMessage("Chat history purged. Memory cleared. Ready for new directives, sir.");
+    }
+  }
+
+  // Enter key to send
+  document.getElementById('chatInput').addEventListener('keydown', e => {
+    if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendMessage(); }
+  });
+
+  // Poll real backend metrics/status/logs
+  setWaveformMode('STANDBY');
+  pollSystemStatus();
+  pollSystemMetrics();
+  pollSessionMetrics();
+  pollSystemLogs();
+  setInterval(pollSystemStatus, 1000);
+  setInterval(pollSystemMetrics, 1000);
+  setInterval(pollSessionMetrics, 1000);
+  setInterval(pollSystemLogs, 2000);
+</script>
+</body>
+</html>

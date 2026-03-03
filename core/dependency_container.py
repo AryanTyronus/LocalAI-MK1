@@ -37,6 +37,7 @@ from tools.news_fetcher import NewsFetcher
 from tools.weather_fetcher import WeatherFetcher
 from tools.indian_market_fetcher import IndianMarketFetcher
 from tools.current_affairs_fetcher import CurrentAffairsFetcher
+from tools.person_lookup_fetcher import PersonLookupFetcher
 
 
 class DependencyContainer:
@@ -114,6 +115,7 @@ class DependencyContainer:
         weather_fetcher = WeatherFetcher(timeout_seconds=6)
         indian_market_fetcher = IndianMarketFetcher(timeout_seconds=6)
         current_affairs_fetcher = CurrentAffairsFetcher(timeout_seconds=6)
+        person_lookup_fetcher = PersonLookupFetcher(timeout_seconds=6)
 
         ToolRegistry.register_tool(
             'python_executor',
@@ -183,6 +185,16 @@ class DependencyContainer:
             category='news',
             human_name='Current Affairs Fetcher',
             example_usage='who is the president of the united states'
+        )
+
+        ToolRegistry.register_tool(
+            'person_lookup_fetcher',
+            'Fetch live person profile summaries',
+            {'query': 'string'},
+            person_lookup_fetcher.execute,
+            category='news',
+            human_name='Person Lookup Fetcher',
+            example_usage='who is Ada Lovelace'
         )
     
     def get_ai_service(self) -> AIService:

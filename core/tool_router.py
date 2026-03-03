@@ -30,6 +30,7 @@ class ToolIntent(Enum):
     GET_WEATHER = "get_weather"
     GET_INDIAN_MARKET = "get_indian_market"
     GET_CURRENT_AFFAIRS = "get_current_affairs"
+    GET_PERSON_INFO = "get_person_info"
     CUSTOM = "custom"
 
 
@@ -109,6 +110,11 @@ class ToolRouter:
         ToolIntent.GET_CURRENT_AFFAIRS: [
             r'who\s+is\s+the\s+president\s+of\s+(?:america|the\s+united\s+states|usa)\??$',
             r'president\s+of\s+(?:america|the\s+united\s+states|usa)\??$',
+        ],
+        ToolIntent.GET_PERSON_INFO: [
+            r'who\s+is\s+([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,4})\??$',
+            r'tell\s+me\s+about\s+([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,4})\??$',
+            r'(?:information|info)\s+(?:on|about)\s+([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,4})\??$',
         ],
     }
     
@@ -194,6 +200,14 @@ class ToolRouter:
             'requires_confirmation': False,
             'category': 'news',
         },
+        'person_lookup_fetcher': {
+            'human_name': 'Person Lookup',
+            'description': 'Fetch live person profile summaries from trusted sources',
+            'example_usage': 'who is Alan Turing',
+            'parameters': {'query': 'string'},
+            'requires_confirmation': False,
+            'category': 'news',
+        },
     }
     
     def __init__(self):
@@ -239,9 +253,23 @@ class ToolRouter:
 
         # Prioritize Indian market routing before generic stock patterns.
         if any(k in lowered for k in ("indian stock market", "nifty", "sensex", "nse", "bse", "stock india")):
-            symbol_match = re.search(r"\b(?:stock|share)\s+(?:of\s+)?([A-Za-z0-9.\-]{1,20})\b", message, flags=re.IGNORECASE)
-            symbol = symbol_match.group(1).strip().upper() if symbol_match else ""
-            if symbol in {"MARKET", "TODAY", "UPDATE", "STATUS"}:
+            symbol = ""
+            indian_symbol_patterns = [
+                r"\b(?:nse|bse)\s+(?:stock\s+)?(?:price\s+)?(?:of|for)\s+([A-Za-z0-9.\-]{1,20})\b",
+                r"\b(?:stock|share)\s+(?:price\s+)?(?:of|for)\s+([A-Za-z0-9.\-]{1,20})\b",
+                r"\b(?:nse|bse)\s+([A-Za-z0-9.\-]{1,20})\b",
+            ]
+            for pattern in indian_symbol_patterns:
+                symbol_match = re.search(pattern, message, flags=re.IGNORECASE)
+                if symbol_match:
+                    symbol = symbol_match.group(1).strip().upper()
+                    break
+
+            invalid_tokens = {
+                "MARKET", "TODAY", "UPDATE", "STATUS", "PRICE", "QUOTE",
+                "STOCK", "SHARE", "NSE", "BSE", "INDIA", "INDIAN"
+            }
+            if symbol in invalid_tokens:
                 symbol = ""
             return ToolCall(
                 intent=ToolIntent.GET_INDIAN_MARKET,
@@ -250,6 +278,18 @@ class ToolRouter:
                 confidence=0.9,
                 requires_confirmation=False
             )
+
+        # Prefer live person lookup for explicit internet-person prompts.
+        if any(k in lowered for k in ("from the internet", "from internet", "online", "latest info", "latest information")):
+            person_query = self._extract_person_query(message)
+            if person_query:
+                return ToolCall(
+                    intent=ToolIntent.GET_PERSON_INFO,
+                    tool_name="person_lookup_fetcher",
+                    parameters={"query": person_query},
+                    confidence=0.88,
+                    requires_confirmation=False
+                )
 
         # Check each intent pattern
         for intent, patterns in self.INTENT_PATTERNS.items():
@@ -323,6 +363,9 @@ class ToolRouter:
 
         elif intent == ToolIntent.GET_CURRENT_AFFAIRS:
             params['query'] = match.group(0).strip()
+
+        elif intent == ToolIntent.GET_PERSON_INFO:
+            params['query'] = match.group(0).strip()
         
         return params
     
@@ -339,8 +382,31 @@ class ToolRouter:
             ToolIntent.GET_WEATHER: "weather_fetcher",
             ToolIntent.GET_INDIAN_MARKET: "indian_market_fetcher",
             ToolIntent.GET_CURRENT_AFFAIRS: "current_affairs_fetcher",
+            ToolIntent.GET_PERSON_INFO: "person_lookup_fetcher",
         }
         return mapping.get(intent, "")
+
+    def _extract_person_query(self, text: str) -> str:
+        """
+        Best-effort person query extraction for internet-profile prompts.
+        """
+        message = (text or "").strip()
+        if not message:
+            return ""
+
+        patterns = [
+            r'who\s+is\s+(.+?)(?:\?|$)',
+            r'tell\s+me\s+about\s+(.+?)(?:\?|$)',
+            r'(?:information|info)\s+(?:on|about)\s+(.+?)(?:\?|$)',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, message, flags=re.IGNORECASE)
+            if match and match.group(1):
+                query = match.group(1).strip()
+                query = re.sub(r'\b(from\s+the\s+internet|from\s+internet|online|latest)\b', '', query, flags=re.IGNORECASE).strip()
+                if query:
+                    return query
+        return ""
     
     def _requires_confirmation(self, intent: ToolIntent) -> bool:
         """Check if intent requires confirmation."""

@@ -37,6 +37,20 @@ from core.token_budget import TokenBudgetManager
 from memory.memory_manager import MemoryManager
 from retrieval.document_manager import DocumentManager
 
+THINKING_POLICY_BLOCK = """Internal Reasoning Policy (hidden):
+- Think through the problem step-by-step internally before answering.
+- Validate factual consistency and relevance against available context.
+- Never reveal internal reasoning, chain-of-thought, or hidden deliberation.
+- Provide only the final answer to the user."""
+
+RESPONSE_MODE_INSTRUCTIONS = {
+    "concise": "Keep the final answer short and direct unless detail is explicitly requested.",
+    "detailed": "Provide fuller explanations with practical detail and clear structure.",
+    "analytical": "Use structured, rigorous reasoning in the final answer with explicit steps and checks.",
+    "casual": "Use a conversational, friendly tone while staying accurate and useful.",
+    "technical": "Use precise technical language, concrete terminology, and implementation-focused details.",
+}
+
 
 class GenerationPipeline:
     """
@@ -99,20 +113,8 @@ class GenerationPipeline:
         self._last_turn_meta = {"memory_updated": False}
         
         # Memory triggers for semantic memory
-        self._memory_triggers = [
-            "my name is",
-            "i was born",
-            "my birthday is",
-            "i like",
-            "i prefer",
-            "my favorite",
-            "i struggle",
-            "i enjoy",
-            "i love",
-            "i hate",
-            "my goal",
-            "i want"
-        ]
+        # Semantic memory is disabled for profile capture; only structured name/age are persisted.
+        self._memory_triggers = []
         
         # Study keywords for document retrieval heuristics
         self._study_keywords = [
@@ -300,10 +302,16 @@ class GenerationPipeline:
         memory_enabled = bool(opts.get("memory_enabled", True))
         dev_logs = bool(opts.get("dev_logs", False))
         project = str(opts.get("project", "LocalAI")).strip() or "LocalAI"
+        include_documents = bool(opts.get("include_documents", True))
+        response_mode = str(opts.get("response_mode", "concise")).strip().lower() or "concise"
+        if response_mode not in {"concise", "detailed", "analytical", "casual", "technical"}:
+            response_mode = "concise"
         return {
             "memory_enabled": memory_enabled,
             "dev_logs": dev_logs,
             "project": project,
+            "include_documents": include_documents,
+            "response_mode": response_mode,
         }
 
     def _prepare_generation_context(self, user_message: str, mode: str, options: Optional[Dict] = None, stream: bool = False) -> Dict:
@@ -340,7 +348,11 @@ class GenerationPipeline:
         future_age = self._calculate_age(birth_year, target_year) if birth_year and target_year else None
 
         docs = []
-        should_run_doc_retrieval = self._should_retrieve_documents(user_message) and not self._is_tool_request(user_message)
+        should_run_doc_retrieval = (
+            runtime.get("include_documents", True)
+            and self._should_retrieve_documents(user_message)
+            and not self._is_tool_request(user_message)
+        )
         if should_run_doc_retrieval:
             try:
                 active_doc = self._document_manager.active_doc_id if self._document_manager else None
@@ -384,7 +396,7 @@ class GenerationPipeline:
             include_semantic = False
 
         system_message = self._build_system_message(
-            mode_obj, name, birth_year, age, current_year, future_age, runtime["project"], now_local
+            mode_obj, name, birth_year, age, current_year, future_age, runtime["project"], now_local, runtime.get("response_mode", "concise")
         )
 
         structured_mem = full_context.get('structured', '') if include_structured else ''
@@ -459,6 +471,8 @@ class GenerationPipeline:
         if re.search(r"\b(read|show)\s+file\b", lowered):
             return True
         if re.search(r"\b(stock|quote|price|ticker)\b", lowered):
+            return True
+        if re.search(r"\b(from\s+the\s+internet|from\s+internet|online|web\s+search|look\s+up)\b", lowered):
             return True
         detected = self._tool_router.detect_intent(text)
         return detected.tool_name != ""
@@ -574,6 +588,18 @@ class GenerationPipeline:
                     lines.append(f"   {link}")
             return "\n".join(lines)
 
+        if tool_name == "person_lookup_fetcher" and isinstance(result, dict):
+            if not result.get("ok"):
+                return f"Person lookup failed: {result.get('error', 'unknown error')}"
+            person = result.get("person", "Unknown person")
+            summary = result.get("summary", "").strip()
+            source = result.get("source", "").strip()
+            if not summary:
+                return f"No live summary returned for {person}."
+            if source:
+                return f"{person}: {summary}\nSource: {source}"
+            return f"{person}: {summary}"
+
         if isinstance(result, dict):
             payload = dict(result)
             if "content" in payload and isinstance(payload["content"], str):
@@ -596,10 +622,19 @@ class GenerationPipeline:
 
         tool_call = self._tool_router.detect_intent(text)
         if not tool_call.tool_name:
+            if re.search(r"\b(from\s+the\s+internet|from\s+internet|online|web\s+search|look\s+up)\b", text, flags=re.IGNORECASE):
+                return "I could not map that internet lookup to a live tool. Try `/tool who is <person>` or `/tool latest news on <topic>`."
             return None
 
         # In non-tool modes, allow safe read-only tools without /tool prefix.
-        safe_tools = {"stock_fetcher", "news_fetcher", "weather_fetcher", "indian_market_fetcher", "current_affairs_fetcher"}
+        safe_tools = {
+            "stock_fetcher",
+            "news_fetcher",
+            "weather_fetcher",
+            "indian_market_fetcher",
+            "current_affairs_fetcher",
+            "person_lookup_fetcher",
+        }
         if (
             not mode_obj.use_tools
             and not user_message.strip().lower().startswith("/tool ")
@@ -1064,7 +1099,8 @@ class GenerationPipeline:
         current_year: int, 
         future_age: Optional[int],
         project: str,
-        now_local: datetime
+        now_local: datetime,
+        response_mode: str = "concise",
     ) -> str:
         """Build system message with user facts."""
         personality = self._config.personality_persistent_prompt
@@ -1072,10 +1108,20 @@ class GenerationPipeline:
         date_str = now_local.strftime("%A, %B %d, %Y")
         time_str = now_local.strftime("%I:%M %p")
         tz = now_local.tzname() or "local time"
+        response_mode_instruction = RESPONSE_MODE_INSTRUCTIONS.get(
+            response_mode, RESPONSE_MODE_INSTRUCTIONS["concise"]
+        )
         return f"""{personality}
 
 Mode Instructions:
 {mode_prompt}
+
+{THINKING_POLICY_BLOCK}
+
+Response Mode:
+- Selected mode: {response_mode}
+- Style instruction: {response_mode_instruction}
+- Follow this style while preserving the internal reasoning policy above.
 
 Memory Instructions:
 - Treat structured memory as source-of-truth for personal facts and prior stated difficulties.
@@ -1092,7 +1138,7 @@ System Facts:
 - Future Age (if applicable): {future_age}
 
 Use system facts when answering.
-Be clear and natural."""
+Be clear, concise, and natural."""
     
     def _handle_agent_mode(self, reply: str) -> str:
         """Handle agent mode tool execution."""

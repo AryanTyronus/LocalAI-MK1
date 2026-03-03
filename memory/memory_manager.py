@@ -183,92 +183,6 @@ class MemoryManager:
             self.update_structured_memory("user.age", int(age_match.group(1)))
             extracted_any = True
 
-        year_match = re.search(r"born in\s+(\d{4})", msg)
-        if year_match:
-            self.update_structured_memory("user.birth_year", int(year_match.group(1)))
-            extracted_any = True
-
-        color_match = re.search(r"my favorite colou?r is\s+(.+?)(?:\.|,|$)", msg)
-        if color_match:
-            self.update_structured_memory("preferences.favorite_color", color_match.group(1).strip())
-            extracted_any = True
-
-        prefer_match = re.search(r"i prefer\s+(.+?)(?:\.|,|$)", msg)
-        if prefer_match:
-            self.update_structured_memory("preferences.general_preference", prefer_match.group(1).strip())
-            extracted_any = True
-
-        like_match = re.search(r"i like\s+(.+?)(?:\.|,|$)", msg)
-        if like_match:
-            thing = like_match.group(1).strip()
-            interests = self.get_structured_memory("preferences.interests") or []
-            if isinstance(interests, list) and thing not in interests:
-                interests.append(thing)
-                self.update_structured_memory("preferences.interests", interests)
-                extracted_any = True
-
-        # Difficulty extraction
-        struggle_match = re.search(
-            r"\b(?:i(?:'m| am)?\s+(?:struggle|struggling|have trouble|have difficulties|have difficulty)\s+(?:in|with)\s+(.+?))(?:[.!?]|$)",
-            msg
-        )
-        if struggle_match:
-            subject_block = struggle_match.group(1).strip()
-            difficulties = self.get_structured_memory("system_state.difficulties") or []
-            for subject in self._split_subjects(subject_block):
-                if isinstance(difficulties, list) and subject not in difficulties:
-                    difficulties.append(subject)
-            self.update_structured_memory("system_state.difficulties", difficulties)
-            extracted_any = True
-
-        find_diff_match = re.search(r"i find\s+(.+?)\s+difficult(?:[.!?]|$)", msg)
-        if find_diff_match:
-            subject_block = find_diff_match.group(1).strip()
-            difficulties = self.get_structured_memory("system_state.difficulties") or []
-            for subject in self._split_subjects(subject_block):
-                if isinstance(difficulties, list) and subject not in difficulties:
-                    difficulties.append(subject)
-            self.update_structured_memory("system_state.difficulties", difficulties)
-            extracted_any = True
-
-        difficult_for_me_match = re.search(r"\b(.+?)\s+(?:is|are)\s+difficult(?:\s+for\s+me)?(?:[.!?]|$)", msg)
-        if difficult_for_me_match:
-            subject_block = difficult_for_me_match.group(1).strip()
-            difficulties = self.get_structured_memory("system_state.difficulties") or []
-            for subject in self._split_subjects(subject_block):
-                if isinstance(difficulties, list) and subject not in difficulties:
-                    difficulties.append(subject)
-            self.update_structured_memory("system_state.difficulties", difficulties)
-            extracted_any = True
-
-        weak_in_match = re.search(r"\bi(?:'m| am)?\s+weak\s+(?:in|with)\s+(.+?)(?:[.!?]|$)", msg)
-        if weak_in_match:
-            subject_block = weak_in_match.group(1).strip()
-            difficulties = self.get_structured_memory("system_state.difficulties") or []
-            for subject in self._split_subjects(subject_block):
-                if isinstance(difficulties, list) and subject not in difficulties:
-                    difficulties.append(subject)
-            self.update_structured_memory("system_state.difficulties", difficulties)
-            extracted_any = True
-
-        weak_subjects_match = re.search(r"\bmy\s+weak\s+subjects?\s+(?:are|is)\s+(.+?)(?:[.!?]|$)", msg)
-        if weak_subjects_match:
-            subject_block = weak_subjects_match.group(1).strip()
-            difficulties = self.get_structured_memory("system_state.difficulties") or []
-            for subject in self._split_subjects(subject_block):
-                if isinstance(difficulties, list) and subject not in difficulties:
-                    difficulties.append(subject)
-            self.update_structured_memory("system_state.difficulties", difficulties)
-            extracted_any = True
-
-        if any(k in msg for k in ("my goal", "i want to", "i am preparing")):
-            self.long_term.add_entry(message, metadata={"source": "profile_extraction"}, importance=self._entry_importance(message))
-            extracted_any = True
-
-        if extracted_any or self._looks_important_statement(message):
-            self._add_long_term_fact(message)
-            extracted_any = True
-
         return extracted_any
 
     def _format_structured_context(self) -> str:
@@ -278,43 +192,10 @@ class MemoryManager:
 
         lines = ["=== User Profile ==="]
         user = structured.get("user", {})
-        prefs = structured.get("preferences", {})
-        goals = structured.get("goals", [])
-        system_state = structured.get("system_state", {})
-
         if user.get("name"):
             lines.append(f"Name: {user['name']}")
         if user.get("age"):
             lines.append(f"Age: {user['age']}")
-        if user.get("birth_year"):
-            lines.append(f"Birth Year: {user['birth_year']}")
-
-        if prefs:
-            lines.append("Preferences:")
-            for k, v in prefs.items():
-                lines.append(f"- {k}: {v}")
-
-        if goals:
-            lines.append("Goals:")
-            for g in goals[:5]:
-                lines.append(f"- {g}")
-
-        if system_state:
-            lines.append("System State:")
-            difficulties = system_state.get("difficulties")
-            if isinstance(difficulties, list) and difficulties:
-                lines.append("- difficulties: " + ", ".join(str(x) for x in difficulties))
-            for k, v in system_state.items():
-                if k == "difficulties":
-                    continue
-                lines.append(f"- {k}: {v}")
-
-        # Add only top important long-term entries (avoid dumping full history)
-        top_entries = self.long_term.top_entries(limit=4)
-        if top_entries:
-            lines.append("Important Long-Term Notes:")
-            for entry in top_entries:
-                lines.append(f"- {entry.get('text', '')}")
 
         return "\n".join(lines) if len(lines) > 1 else ""
 
