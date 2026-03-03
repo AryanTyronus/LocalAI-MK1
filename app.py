@@ -15,6 +15,10 @@ import os
 import socket
 import requests
 import re
+import json
+import subprocess
+import time
+from urllib.parse import quote_plus
 from collections import deque
 from datetime import datetime
 import threading
@@ -37,8 +41,12 @@ from core.request_policies import (
 
 app = Flask(__name__)
 
-# Global orchestrator (lazy initialization)
+# Global orchestrator
 _orchestrator = AppOrchestrator()
+_init_lock = threading.Lock()
+_synapse_initialized = False
+_synapse_ready = False
+_ai_service = None
 
 # Web search settings
 SERPER_ENDPOINT = "https://google.serper.dev/search"
@@ -47,12 +55,12 @@ MAX_CONTEXT_CHARS = 1200
 MAX_SYSTEM_LOGS = 20
 MAX_REFLECTION_RETRIES = 1
 MAX_POLICY_NOTE_CHARS = 240
+CLASSIFIER_MAX_TOKENS = 220
 
 
 # Runtime dashboard state (in-memory, process-local)
 _state_lock = threading.Lock()
 _model_status = "STANDBY"
-_model_loaded_logged = False
 _session_metrics = {
     "exchanges": 0,
     "tokens": 0,
@@ -65,6 +73,22 @@ _process = psutil.Process(os.getpid()) if psutil else None
 if _process:
     # Prime psutil cpu counters to get meaningful non-zero values later.
     _process.cpu_percent(interval=None)
+
+WHITELISTED_INTENTS = {
+    "play_music",
+    "play_music_mood",
+    "play_specific_song",
+    "search_google",
+    "search_youtube",
+    "open_safari",
+    "open_instagram",
+    "open_roblox",
+    "open_gmail",
+    "open_chatgpt",
+    "open_github",
+    "open_calendar",
+    "open_spotify_app",
+}
 
 
 def _load_local_env_file() -> None:
@@ -156,24 +180,73 @@ _add_log("Backend started")
 
 
 def get_ai_service():
+    """Return pre-initialized AIService."""
+    if not _synapse_ready or _ai_service is None:
+        raise RuntimeError("SYNAPSE is not initialized.")
+    return _ai_service
+
+
+def initialize_synapse() -> None:
     """
-    Get the AIService instance (lazy initialization).
-    
-    Returns:
-        AIService instance
+    One-time startup initializer.
+
+    Loads model/service stack, initializes classifier/memory paths, runs warmup
+    inference, and marks the process as ready.
     """
-    try:
-        svc = _orchestrator.get_ai_service()
-        global _model_loaded_logged
-        if not _model_loaded_logged:
+    global _synapse_initialized, _synapse_ready, _ai_service
+
+    with _init_lock:
+        if _synapse_initialized and _synapse_ready and _ai_service is not None:
+            return
+
+        _set_model_status("OFFLINE")
+        started = time.perf_counter()
+        logger.info("[SYNAPSE] Loading model...")
+        _add_log("Loading model")
+        try:
+            _orchestrator.warm_model()
+            _ai_service = _orchestrator.get_ai_service()
             _add_log("Model loaded")
-            _model_loaded_logged = True
-        return svc
-    except Exception as e:
-        import traceback
-        logger.error(f"AI SERVICE INITIALIZATION FAILED: {type(e).__name__}: {str(e)}")
-        traceback.print_exc()
-        raise
+
+            logger.info("[SYNAPSE] Initializing memory...")
+            _add_log("Initializing memory")
+            if hasattr(_ai_service, "get_memory_dashboard"):
+                _ai_service.get_memory_dashboard()
+
+            logger.info("[SYNAPSE] Initializing intent classifier...")
+            _add_log("Initializing intent classifier")
+            classify_intent("system status check")
+            classify_response_mode("hello", "general_chat")
+            _safe_json_extract('{"intent":"normal_chat"}')
+
+            logger.info("[SYNAPSE] Warming up inference...")
+            _add_log("Warming up inference")
+            _ai_service.generate_response(
+                "Reply with exactly: OK",
+                mode="chat",
+                options={
+                    "memory_enabled": False,
+                    "include_documents": False,
+                    "response_mode": "concise",
+                    "reflection_enabled": False,
+                },
+            )
+
+            _synapse_initialized = True
+            _synapse_ready = True
+            _set_model_status("STANDBY")
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            logger.info(f"[SYNAPSE] Ready. Startup took {elapsed_ms:.0f} ms.")
+            _add_log("SYNAPSE ready")
+            print("SYNAPSE ready.")
+        except Exception as e:
+            _synapse_ready = False
+            _synapse_initialized = False
+            _ai_service = None
+            _set_model_status("ERROR")
+            _add_log(f"Initialization error: {type(e).__name__}: {str(e)}")
+            logger.exception(f"[SYNAPSE] Initialization failed: {type(e).__name__}: {str(e)}")
+            raise
 
 
 def needs_live_data(prompt: str) -> bool:
@@ -440,6 +513,267 @@ def _parse_reflection_strictness(value, default: float = 1.0) -> float:
     return max(0.5, min(1.8, parsed))
 
 
+def _sanitize_param_text(value, max_len: int = 120) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    # Keep alnum/space/common punctuation only.
+    text = re.sub(r"[^a-zA-Z0-9\s\-\_\.\,\!\?\'\"\&\(\):]", "", text)
+    return text[:max_len].strip()
+
+
+def _fallback_extract_query(raw_message: str, platform: str) -> str:
+    """
+    Extract search query from user message when classifier misses parameters.
+    """
+    text = _sanitize_param_text(raw_message or "", max_len=240)
+    if not text:
+        return ""
+    lowered = text.lower()
+
+    if platform == "youtube":
+        patterns = [
+            r"(?:search\s+youtube\s+(?:for\s+)?)\s*(.+)$",
+            r"(?:youtube\s+(?:search\s+)?(?:for\s+)?)\s*(.+)$",
+            r"(?:play\s+on\s+youtube\s+)\s*(.+)$",
+        ]
+    else:
+        patterns = [
+            r"(?:search\s+google\s+(?:for\s+)?)\s*(.+)$",
+            r"(?:google\s+(?:search\s+)?(?:for\s+)?)\s*(.+)$",
+        ]
+
+    for pattern in patterns:
+        m = re.search(pattern, lowered, flags=re.IGNORECASE)
+        if m:
+            candidate = _sanitize_param_text(m.group(1), max_len=180)
+            if candidate:
+                return candidate
+
+    # Last resort: return original text minus command words.
+    stripped = re.sub(r"\b(search|google|youtube|for|on|play|open)\b", "", lowered, flags=re.IGNORECASE)
+    return _sanitize_param_text(stripped, max_len=180)
+
+
+def _is_trivial_query(query: str) -> bool:
+    value = (query or "").strip().lower()
+    if not value:
+        return True
+    trivial = {
+        "open", "youtube", "google", "search", "play",
+        "open youtube", "open google", "search youtube", "search google"
+    }
+    return value in trivial or len(value) < 2
+
+
+def _safe_json_extract(raw_text: str) -> dict:
+    if not isinstance(raw_text, str):
+        return {"intent": "normal_chat"}
+    text = raw_text.strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start:end + 1]
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {"intent": "normal_chat"}
+
+
+def _build_intent_classifier_prompt(user_message: str) -> str:
+    allowed = ", ".join(sorted(WHITELISTED_INTENTS))
+    return (
+        "You are an intent classifier. Output STRICT JSON only.\n"
+        "No markdown. No extra text.\n\n"
+        "Allowed intents:\n"
+        f"{allowed}\n\n"
+        "If user message matches an allowed intent, return:\n"
+        "{\"intent\": \"<intent_name>\", \"parameters\": {...}}\n\n"
+        "Otherwise return exactly:\n"
+        "{\"intent\": \"normal_chat\"}\n\n"
+        "Parameter hints:\n"
+        "- search_google: {\"query\": \"...\"}\n"
+        "- search_youtube: {\"query\": \"...\"}\n"
+        "- play_music_mood: {\"mood\": \"...\"}\n"
+        "- play_specific_song: {\"song\": \"...\"}\n\n"
+        f"User message:\n{user_message}"
+    )
+
+
+def classify_whitelisted_intent(user_message: str, svc) -> dict:
+    prompt = _build_intent_classifier_prompt(user_message)
+    try:
+        raw = svc.generate_response(
+            prompt,
+            mode="chat",
+            options={
+                "memory_enabled": False,
+                "include_documents": False,
+                "response_mode": "concise",
+                "reflection_enabled": False,
+            },
+        )
+    except Exception:
+        return {"intent": "normal_chat", "parameters": {}}
+
+    parsed = _safe_json_extract(raw)
+    intent = parsed.get("intent", "normal_chat")
+    if not isinstance(intent, str):
+        intent = "normal_chat"
+    intent = intent.strip()
+    if intent not in WHITELISTED_INTENTS:
+        return {"intent": "normal_chat", "parameters": {}}
+    params = parsed.get("parameters", {})
+    if not isinstance(params, dict):
+        params = {}
+    return {"intent": intent, "parameters": params}
+
+
+def _open_url(url: str) -> bool:
+    try:
+        subprocess.Popen(["open", url])
+        return True
+    except Exception:
+        return False
+
+
+def _open_app(app_name: str) -> bool:
+    try:
+        subprocess.Popen(["open", "-a", app_name])
+        return True
+    except Exception:
+        return False
+
+
+def open_safari(_params: dict) -> tuple[bool, str]:
+    ok = _open_app("Safari")
+    return ok, ("Opening Safari." if ok else "Could not open Safari.")
+
+
+def open_instagram(_params: dict) -> tuple[bool, str]:
+    ok = _open_url("https://www.instagram.com")
+    return ok, ("Opening Instagram." if ok else "Could not open Instagram.")
+
+
+def open_roblox(_params: dict) -> tuple[bool, str]:
+    ok = _open_url("https://www.roblox.com")
+    return ok, ("Opening Roblox." if ok else "Could not open Roblox.")
+
+
+def open_gmail(_params: dict) -> tuple[bool, str]:
+    ok = _open_url("https://mail.google.com")
+    return ok, ("Opening Gmail." if ok else "Could not open Gmail.")
+
+
+def open_chatgpt(_params: dict) -> tuple[bool, str]:
+    ok = _open_url("https://chat.openai.com")
+    return ok, ("Opening ChatGPT." if ok else "Could not open ChatGPT.")
+
+
+def open_github(_params: dict) -> tuple[bool, str]:
+    ok = _open_url("https://github.com")
+    return ok, ("Opening GitHub." if ok else "Could not open GitHub.")
+
+
+def open_calendar(_params: dict) -> tuple[bool, str]:
+    ok = _open_app("Calendar")
+    return ok, ("Opening Calendar." if ok else "Could not open Calendar.")
+
+
+def open_spotify_app(_params: dict) -> tuple[bool, str]:
+    ok = _open_app("Spotify")
+    return ok, ("Opening Spotify app." if ok else "Could not open Spotify app.")
+
+
+def search_google(params: dict) -> tuple[bool, str]:
+    query = _sanitize_param_text(params.get("query", ""))
+    if not query:
+        query = _fallback_extract_query(params.get("__raw_message", ""), platform="google")
+    if _is_trivial_query(query):
+        return False, "Google search query is missing."
+    ok = _open_url(f"https://www.google.com/search?q={quote_plus(query)}")
+    return ok, (f"Searching Google for '{query}'." if ok else "Could not start Google search.")
+
+
+def search_youtube(params: dict) -> tuple[bool, str]:
+    query = _sanitize_param_text(params.get("query", ""))
+    if not query:
+        query = _fallback_extract_query(params.get("__raw_message", ""), platform="youtube")
+    if _is_trivial_query(query):
+        ok = _open_url("https://www.youtube.com")
+        return ok, ("Opening YouTube." if ok else "Could not open YouTube.")
+    ok = _open_url(f"https://www.youtube.com/results?search_query={quote_plus(query)}")
+    return ok, (f"Searching YouTube for '{query}'." if ok else "Could not start YouTube search.")
+
+
+def play_music(_params: dict) -> tuple[bool, str]:
+    ok = _open_url("spotify:home") or _open_url("https://open.spotify.com")
+    return ok, ("Playing music on Spotify." if ok else "Could not start music playback.")
+
+
+def play_music_mood(params: dict) -> tuple[bool, str]:
+    mood = _sanitize_param_text(params.get("mood", ""))
+    if not mood:
+        return False, "Music mood is missing."
+    ok = _open_url(f"https://open.spotify.com/search/{quote_plus(mood)}")
+    return ok, (f"Playing {mood} music on Spotify." if ok else "Could not open Spotify mood search.")
+
+
+def play_specific_song(params: dict) -> tuple[bool, str]:
+    song = _sanitize_param_text(params.get("song", ""))
+    if not song:
+        return False, "Song name is missing."
+    ok = _open_url(f"https://open.spotify.com/search/{quote_plus(song)}")
+    return ok, (f"Playing '{song}' on Spotify." if ok else "Could not open Spotify song search.")
+
+
+INTENT_TO_FUNCTION = {
+    "open_safari": open_safari,
+    "open_instagram": open_instagram,
+    "open_roblox": open_roblox,
+    "open_gmail": open_gmail,
+    "open_chatgpt": open_chatgpt,
+    "open_github": open_github,
+    "open_calendar": open_calendar,
+    "open_spotify_app": open_spotify_app,
+    "search_google": search_google,
+    "search_youtube": search_youtube,
+    "play_music": play_music,
+    "play_music_mood": play_music_mood,
+    "play_specific_song": play_specific_song,
+}
+
+
+def execute_whitelisted_intent(intent_payload: dict) -> tuple[bool, str]:
+    intent = intent_payload.get("intent", "normal_chat")
+    if intent not in WHITELISTED_INTENTS:
+        return False, "normal_chat"
+    handler = INTENT_TO_FUNCTION.get(intent)
+    if not callable(handler):
+        return False, "normal_chat"
+    params = intent_payload.get("parameters", {})
+    if not isinstance(params, dict):
+        params = {}
+    # Attach raw message for safe fallback extraction when parameters are incomplete.
+    raw_message = intent_payload.get("__raw_message", "")
+    if isinstance(raw_message, str) and raw_message:
+        params = dict(params)
+        params["__raw_message"] = raw_message
+    return handler(params)
+
+
 # ===================
 # Routes
 # ===================
@@ -447,7 +781,14 @@ def _parse_reflection_strictness(value, default: float = 1.0) -> float:
 @app.route("/")
 def home():
     """Render the landing page."""
-    return render_template("landing.html")
+    cfg = Config()
+    return render_template(
+        "landing.html",
+        launch_url="/app",
+        local_chat_endpoint="/chat",
+        api_formats_count=4,  # localai, ollama, openai-compatible, lmstudio
+        projects_count=len(getattr(cfg, "ui_projects", []) or []),
+    )
 
 
 @app.route("/app")
@@ -488,6 +829,28 @@ def chat_api():
     _set_model_status("PROCESSING")
     started_at = datetime.now().timestamp()
     try:
+        svc = get_ai_service()
+
+        # --- Whitelisted intent classification + secure execution layer ---
+        intent_payload = classify_whitelisted_intent(user_message, svc)
+        intent_payload["__raw_message"] = user_message
+        if intent_payload.get("intent") in WHITELISTED_INTENTS:
+            _add_log(f"Whitelisted intent detected: {intent_payload.get('intent')}")
+            executed, confirmation = execute_whitelisted_intent(intent_payload)
+            confirmation_text = confirmation if isinstance(confirmation, str) else "Command executed."
+            confirmation_text = confirmation_text.strip() or "Command executed."
+            latency_ms = (datetime.now().timestamp() - started_at) * 1000.0
+            _record_successful_turn(user_message, confirmation_text, latency_ms)
+            _set_model_status("STANDBY")
+            _add_log(f"Intent execution {'ok' if executed else 'failed'} ({int(latency_ms)} ms)")
+            return jsonify({
+                "response": confirmation_text,
+                "memory_updated": False,
+                "intent": intent_payload.get("intent"),
+                "intent_payload": intent_payload,
+                "executed": bool(executed),
+            })
+
         options = dict(options or {})
         reflection_enabled = bool(options.get("reflection_enabled", True))
         reflection_strictness = _parse_reflection_strictness(options.get("reflection_strictness", 1.0))
@@ -520,7 +883,6 @@ def chat_api():
                 "policy": policy,
             })
 
-        svc = get_ai_service()
         prompt_to_send = cleaned_user_message
         policy_note = _build_policy_note(policy)
         if policy.get("use_web"):
@@ -795,12 +1157,6 @@ def _find_free_port(preferred: int) -> int:
 # ===================
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--preload-model", action="store_true", help="Preload model at startup")
-    args, _ = parser.parse_known_args()
-    
     preferred = int(os.getenv('PORT', '8000'))
     chosen = _find_free_port(preferred)
     
@@ -808,16 +1164,11 @@ if __name__ == "__main__":
         print(f"Port {preferred} unavailable — starting on {chosen} instead.")
     else:
         print(f"Starting server on port {chosen}")
-    
-    # Optionally preload model
-    if args.preload_model:
-        try:
-            print("Preloading model and services...")
-            _orchestrator.warm_model()
-            get_ai_service()
-            print("Preload complete.")
-        except Exception as e:
-            print(f"Preload failed: {e}")
-    
+
+    try:
+        initialize_synapse()
+    except Exception:
+        raise SystemExit(1)
+
     # Run the Flask app
     app.run(host="0.0.0.0", port=chosen, debug=False)
