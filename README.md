@@ -1,113 +1,150 @@
-# LocalAI
+# SYNAPSE LocalAI
 
-LocalAI is a Flask-based local assistant with streaming chat, multi-mode orchestration, structured memory, and reactive tool execution.
+SYNAPSE is a Flask-based LocalAI assistant with startup preloading, streaming chat, memory, intent routing, tool execution, and live dashboard telemetry.
 
-## Core Features
+## Current Capabilities
 
-- Streaming chat via `/chat/stream` (SSE)
-- Multi-mode runtime: `chat`, `coding`, `research`, `agent`
-- Registry-driven slash commands (`/help`, `/tool`) with metadata
-- Dynamic `/help` UI card (human-facing command/tool list, no raw regex)
-- 3-layer memory:
-  - short-term conversation
-  - structured long-term profile/state
-  - vector semantic memory
-- Deterministic handlers for:
-  - local date/time
-  - direct memory recall (name, difficulties)
-- Reactive tools (no hidden background agents):
-  - `python_executor`
-  - `file_reader`
-  - `stock_fetcher`
-  - `news_fetcher`
-  - `weather_fetcher`
-  - `indian_market_fetcher`
-  - `current_affairs_fetcher`
-
-## UI
-
-- Dark developer-console style layout
-- Fixed top status bar + fixed left control sidebar
-- Isolated scroll chat feed with anchored composer
-- Styled system cards for structured responses (including `/help`)
-- Memory and tool-log drawers
+- Eager startup initialization (`initialize_synapse`) before server begins accepting traffic
+- Main chat endpoint and SSE streaming endpoint
+- Smart prompt routing with:
+  - intent classification
+  - response-mode classification
+  - context policy selection
+  - optional reflection/regeneration pass
+- Live web search context injection using Serper (`SERPER_API_KEY`)
+- Whitelisted command-intent execution layer (safe mapping only)
+- Runtime system dashboard APIs:
+  - `/system/metrics`
+  - `/system/status`
+  - `/session/metrics`
+  - `/system/logs`
+- UI pages:
+  - `/` landing page
+  - `/app` SYNAPSE chat interface
 
 ## Architecture
 
-- `app.py`: HTTP layer only (request/response/error formatting)
-- `core/dependency_container.py`: dependency wiring and tool registration
-- `core/generation_pipeline.py`: orchestration (memory, tools, slash commands, generation)
-- `core/command_registry.py`: central slash command metadata + handlers
-- `core/tool_router.py`: internal trigger matching (backend-only patterns)
-- `core/tool_registry.py`: executable tool registry (handler + metadata)
-- `memory/`: short-term/long-term/vector memory components
-- `tools/`: tool implementations
-- `templates/`, `static/`: frontend templates and assets
+- `app.py`: HTTP routes, orchestration hooks, runtime state, startup initialization
+- `core/`: orchestration, prompt policies, model adapters, tool routing, config
+- `memory/`: short-term, structured, and semantic memory layers
+- `tools/`: fetchers and utility tools
+- `templates/`, `static/`: landing page and web app UI
+- `tests/`: policy and error-handling test modules
 
-## Quick Start
+## Requirements
 
-1. Create and activate a virtual environment.
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Start app:
-   ```bash
-   python app.py
-   ```
+- Python 3.10+
+- macOS for app-intent handlers (`open -a ...`) used by whitelisted intents
+- Optional API key for live web search:
+  - `SERPER_API_KEY`
 
-Server starts on `http://127.0.0.1:8000` or next available port.
+## Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Create `.env` in project root:
+
+```env
+SERPER_API_KEY=your_serper_key_here
+PORT=8000
+```
+
+## Run
+
+```bash
+python app.py
+```
+
+Expected startup sequence:
+
+- `[SYNAPSE] Loading model...`
+- `[SYNAPSE] Initializing memory...`
+- `[SYNAPSE] Initializing intent classifier...`
+- `[SYNAPSE] Warming up inference...`
+- `SYNAPSE ready.`
 
 ## API
 
 ### `POST /chat`
 
 Request:
+
 ```json
 {
-  "message": "Hello",
+  "message": "What is the latest AI news today?",
   "mode": "chat",
   "options": {
-    "project": "LocalAI",
-    "memory_enabled": true,
-    "dev_logs": false
+    "reflection_enabled": true,
+    "reflection_strictness": 1.0
   }
 }
 ```
 
-Response:
-```json
-{
-  "response": "...",
-  "memory_updated": false
-}
-```
+Response fields include:
+
+- `response`
+- `memory_updated`
+- `intent`, `intent_confidence`
+- `response_mode`, `response_mode_confidence`
+- `reflected`, `reflection_reason`
+- `policy`
 
 ### `POST /chat/stream`
 
-SSE stream of text chunks.
+SSE stream of generated chunks.
 
-Special stream messages:
-- `__TOKENS__:{...}` final token/runtime payload
-- `__SYSTEM_CARD__:{...}` structured system card payload
+### `GET /system/metrics`
 
-## Slash Commands
+Returns CPU, RAM, process CPU, and temperature estimate/sensor value.
 
-- `/help`: show dynamic command/tool/capability list
-- `/tool <request>`: route a request to a matching tool
+### `GET /system/status`
 
-## Tool Examples
+Returns model state: `STANDBY`, `PROCESSING`, `OFFLINE`, or `ERROR`.
 
-- `weather in London`
-- `latest news on AI`
-- `stock price for NVDA`
-- `indian stock market today`
-- `/tool read file app.py`
-- `/tool run python: print(2+2)`
+### `GET /session/metrics`
 
-## Runtime Notes
+Returns exchanges, tokens, average latency, and context size.
 
-- Some tools require internet access.
-- FAISS is used when available for vector search.
-- `LOCALAI_DEV_MODE=1` uses `FakeModelManager` for lightweight testing.
-- If MLX runtime probe fails, LocalAI falls back safely to fake model unless `LOCALAI_REQUIRE_REAL_MODEL=1`.
+### `GET /system/logs`
+
+Returns last 20 backend activity log events.
+
+## Whitelisted Intents
+
+- `play_music`
+- `play_music_mood`
+- `play_specific_song`
+- `search_google`
+- `search_youtube`
+- `open_safari`
+- `open_instagram`
+- `open_roblox`
+- `open_gmail`
+- `open_chatgpt`
+- `open_github`
+- `open_calendar`
+- `open_spotify_app`
+
+If classification output is outside whitelist, request falls back to normal chat flow.
+
+## Testing
+
+Run fast policy tests:
+
+```bash
+python -m pytest -q tests/test_request_policies.py tests/test_prompt_policies.py
+```
+
+Run error handling tests:
+
+```bash
+python -m pytest -q tests/test_error_handling.py
+```
+
+For full capability verification, use:
+
+- [LOCALAI_CAPABILITIES_AND_TESTS.md](/Users/aryandas/Desktop/My%20python%20AI/LocalAI/LOCALAI_CAPABILITIES_AND_TESTS.md)
