@@ -36,6 +36,8 @@ from core.intent_classifier import IntentClassifier
 from core.token_budget import TokenBudgetManager
 from memory.memory_manager import MemoryManager
 from retrieval.document_manager import DocumentManager
+from planning.planner import Planner
+from capabilities.executor import CapabilityExecutor
 
 THINKING_POLICY_BLOCK = """Internal Reasoning Policy (hidden):
 - Think through the problem step-by-step internally before answering.
@@ -103,6 +105,8 @@ class GenerationPipeline:
         self._mode_controller = mode_controller
         self._document_manager = document_manager
         self._tool_registry = tool_registry
+        self._planner = Planner()
+        self._capability_executor = CapabilityExecutor(tool_registry=self._tool_registry)
         
         # Phase 7: ToolRouter for intent detection
         self._tool_router = tool_router or get_tool_router()
@@ -613,6 +617,9 @@ class GenerationPipeline:
         Tool decision layer:
         execute explicit tool requests reactively with no persistent workers.
         """
+        plan = self._planner.plan(user_message)
+        logger.info(f"Planner steps: {plan.steps} (reason={plan.reason}, conf={plan.confidence:.2f})")
+
         if not self._is_tool_request(user_message):
             return None
 
@@ -643,7 +650,7 @@ class GenerationPipeline:
             return None
 
         try:
-            result = self._tool_registry.execute_tool(
+            result = self._capability_executor.execute(
                 tool_call.tool_name,
                 dict(tool_call.parameters or {}),
                 require_confirmation=False

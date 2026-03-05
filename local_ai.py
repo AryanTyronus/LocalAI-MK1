@@ -16,10 +16,10 @@ import faiss
 from pypdf import PdfReader
 
 from core.chat_formatter import ChatFormatter, ModelType
+from core.config import MODEL_NAME
 
 # ================= SETTINGS =================
 
-MODEL_NAME = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 
 MEMORY_FILE = "structured_memory.json"
 KNOWLEDGE_FOLDER = "knowledge"

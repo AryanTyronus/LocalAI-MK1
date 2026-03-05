@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "templates": {
+    "empty_response": "Return a direct answer with complete content in plain text.",
+    "too_short_for_question": "Answer with sufficient detail for the user question.",
+    "analytical_too_brief": "Provide stepwise reasoning and a final concise conclusion.",
+    "analytical_lacks_reasoning_markers": "Include key intermediate logic before the final result.",
+    "echoed_user_prompt": "Do not repeat the user question; provide a true answer.",
+    "reasoning_leakage_marker": "Do not expose internal reasoning; provide only final answer."
+  }
+}

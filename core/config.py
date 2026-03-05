@@ -316,7 +316,7 @@ class Config:
 # Load the singleton config
 _config = Config()
 
-MODEL_NAME = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+MODEL_NAME = _config.model_name
 MODEL_CONTEXT_WINDOW = _config.model_context_window
 MODEL_THREADING_ENABLED = _config.model_threading_enabled
 MODEL_MAX_THREADS = _config.model_max_threads

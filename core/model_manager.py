@@ -205,6 +205,25 @@ class ModelManager:
         Returns:
             Formatted prompt ready for generation
         """
+        # Prefer model-native chat templating when tokenizer supports it.
+        if self.tokenizer is not None and hasattr(self.tokenizer, "apply_chat_template"):
+            messages = []
+            if system:
+                messages.append({"role": "system", "content": system})
+            if history:
+                messages.append({"role": "user", "content": history})
+            messages.append({"role": "user", "content": user or ""})
+            try:
+                return self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Tokenizer chat template failed ({type(e).__name__}); "
+                    "falling back to ChatFormatter."
+                )
         return self.chat_formatter.build_prompt(system, user, history)
 
     def format_messages(self, messages: list) -> str:

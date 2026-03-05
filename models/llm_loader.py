@@ -68,7 +68,7 @@ class LLMLoader:
         Load MLX model/tokenizer lazily.
         """
         self._configure_threading()
-        from mlx_lm import load  # lazy import: avoid MLX initialization at module import time
+        from mlx_lm import load, generate  # noqa: F401
 
         logger.info(f"Loading model: {self._model_name}")
         model, tokenizer = load(self._model_name)
@@ -110,11 +110,12 @@ class LLMLoader:
         """
         Generate text from loaded model.
         """
-        from mlx_lm import generate as mlx_generate  # lazy import for safety
+        from mlx_lm import load, generate  # noqa: F401
 
-        return mlx_generate(
+        output = generate(
             model,
             tokenizer,
             prompt=prompt,
             max_tokens=max_tokens,
         )
+        return str(output)

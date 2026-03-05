@@ -29,6 +29,8 @@ from core.logger import logger
 from core.model_manager import ModelManager
 from memory.long_term_memory import LongTermMemory
 from memory.vector_memory import VectorMemory
+from memory.memory_store import MemoryStore
+from memory.memory_retriever import MemoryRetriever
 
 
 def _project_namespace() -> str:
@@ -58,6 +60,10 @@ class MemoryManager:
         long_term_path = MEMORY_FILE
         self.long_term = LongTermMemory(filepath=long_term_path, max_entries=700)
         self._maybe_migrate_legacy_structured(long_term_path)
+
+        # SQLite persistence for short-term + long-term fact retrieval.
+        self.sqlite_store = MemoryStore()
+        self.sqlite_retriever = MemoryRetriever(self.sqlite_store)
 
         # Layer 3: vector memory (project namespaced, lazy)
         namespace = _project_namespace()
@@ -109,14 +115,19 @@ class MemoryManager:
 
     def add_short_term_message(self, role: str, content: str) -> None:
         with self._lock:
+            timestamp = datetime.now().isoformat()
             self.short_term.append(
                 {
                     "role": role,
                     "content": content,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": timestamp,
                 }
             )
             self._truncate_short_term_by_tokens()
+            try:
+                self.sqlite_store.add_short_term(role=role, content=content, timestamp=timestamp)
+            except Exception as exc:
+                logger.warning(f"SQLite short-term write failed: {exc}")
 
     def get_short_term_context(self) -> str:
         with self._lock:
@@ -263,6 +274,12 @@ class MemoryManager:
                 metadata={"source": "fact_capture"},
                 importance=self._entry_importance(normalized),
             )
+            self.sqlite_store.add_long_term_fact(
+                text=normalized,
+                category="fact",
+                source="fact_capture",
+                importance=self._entry_importance(normalized),
+            )
         except Exception as exc:
             logger.warning(f"Long-term fact capture failed: {exc}")
 
@@ -301,10 +318,21 @@ class MemoryManager:
     # ================================================
 
     def build_full_context(self, current_query: str) -> Dict[str, str]:
+        sqlite_memories = ""
+        try:
+            retrieved = self.sqlite_retriever.retrieve(current_query, top_k=4)
+            if retrieved:
+                sqlite_memories = "=== Retrieved Long-Term Memory ===\n" + "\n".join(f"- {x}" for x in retrieved)
+        except Exception as exc:
+            logger.warning(f"SQLite memory retrieval failed: {exc}")
+
+        semantic_block = self.get_semantic_context(current_query)
+        if sqlite_memories:
+            semantic_block = "\n\n".join([b for b in [semantic_block, sqlite_memories] if b])
         return {
             "short_term": self.get_short_term_context(),
             "rolling_summary": "",
-            "semantic": self.get_semantic_context(current_query),
+            "semantic": semantic_block,
             "structured": self._format_structured_context(),
         }
 

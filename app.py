@@ -38,6 +38,10 @@ from core.request_policies import (
     build_context_policy as policy_build_context_policy,
     sanitize_model_reply,
 )
+from agents.scheduler import AgentScheduler
+from agents.tasks import system_monitor_task, daily_summary_task, repository_monitor_task
+from prompt_optimization.prompt_tracker import PromptTracker
+from prompt_optimization.prompt_optimizer import PromptOptimizer
 
 app = Flask(__name__)
 
@@ -47,6 +51,9 @@ _init_lock = threading.Lock()
 _synapse_initialized = False
 _synapse_ready = False
 _ai_service = None
+_agent_scheduler = None
+_prompt_tracker = PromptTracker()
+_prompt_optimizer = PromptOptimizer()
 
 # Web search settings
 SERPER_ENDPOINT = "https://google.serper.dev/search"
@@ -193,7 +200,7 @@ def initialize_synapse() -> None:
     Loads model/service stack, initializes classifier/memory paths, runs warmup
     inference, and marks the process as ready.
     """
-    global _synapse_initialized, _synapse_ready, _ai_service
+    global _synapse_initialized, _synapse_ready, _ai_service, _agent_scheduler
 
     with _init_lock:
         if _synapse_initialized and _synapse_ready and _ai_service is not None:
@@ -235,6 +242,15 @@ def initialize_synapse() -> None:
             _synapse_initialized = True
             _synapse_ready = True
             _set_model_status("STANDBY")
+
+            if _agent_scheduler is None:
+                _agent_scheduler = AgentScheduler()
+                _agent_scheduler.add_task("system_monitor", 20, system_monitor_task)
+                _agent_scheduler.add_task("daily_summary", 3600, daily_summary_task)
+                _agent_scheduler.add_task("repository_monitor", 600, repository_monitor_task)
+                _agent_scheduler.start()
+                _add_log("Background agents started")
+
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             logger.info(f"[SYNAPSE] Ready. Startup took {elapsed_ms:.0f} ms.")
             _add_log("SYNAPSE ready")
@@ -462,16 +478,24 @@ def _should_reflect_response(
     return False, "ok"
 
 
-def _build_reflection_prompt(original_prompt: str, previous_answer: str, reason: str) -> str:
+def _build_reflection_prompt(
+    original_prompt: str,
+    previous_answer: str,
+    reason: str,
+    extra_guidance: str = "",
+) -> str:
     """
     Build a one-time refinement prompt from the first draft.
     """
+    guidance = (extra_guidance or "").strip()
+    guidance_block = f"\nOptimization Guidance:\n{guidance}\n" if guidance else ""
     return (
         "System: Improve the assistant answer for correctness and completeness.\n"
         "Do not reveal internal reasoning. Return only the final improved answer.\n\n"
         f"User Question:\n{original_prompt}\n\n"
         f"Previous Draft:\n{previous_answer}\n\n"
         f"Issue Detected:\n{reason}\n\n"
+        f"{guidance_block}"
         "Task:\nProvide a better final answer."
     )
 
@@ -613,6 +637,37 @@ def _build_intent_classifier_prompt(user_message: str) -> str:
 
 
 def classify_whitelisted_intent(user_message: str, svc) -> dict:
+    # Fast keyword-based matching for greetings and common phrases
+    text_lower = user_message.lower().strip()
+    
+    # Never match greetings - these should always be normal chat
+    greetings = ["hello", "hi", "hey", "how are", "good morning", "good evening", "good afternoon"]
+    for g in greetings:
+        if text_lower == g or text_lower.startswith(g + " ") or text_lower.startswith(g + ","):
+            return {"intent": "normal_chat", "parameters": {}}
+    
+    # Only match explicit tool requests - user must EXPLICITLY ask to open something
+    # Check if this is an explicit tool request before calling LLM
+    explicit_tool_keywords = [
+        "open gmail", "launch gmail", "go to gmail", "check gmail", "start gmail",
+        "open chatgpt", "launch chatgpt", "go to chatgpt", "use chatgpt", "start chatgpt",
+        "open github", "launch github", "go to github", "start github",
+        "open safari", "launch safari", "start safari",
+        "open instagram", "launch instagram", "start instagram",
+        "open roblox", "launch roblox", "start roblox",
+        "open calendar", "launch calendar", "check calendar", "start calendar",
+        "open spotify", "launch spotify", "start spotify",
+        "search google for", "google search for",
+        "search youtube for", "find on youtube",
+    ]
+    
+    is_explicit_tool_request = any(keyword in text_lower for keyword in explicit_tool_keywords)
+    
+    # If not an explicit tool request, return normal_chat immediately (skip LLM)
+    if not is_explicit_tool_request:
+        return {"intent": "normal_chat", "parameters": {}}
+    
+    # Only use LLM for explicit tool requests
     prompt = _build_intent_classifier_prompt(user_message)
     try:
         raw = svc.generate_response(
@@ -899,7 +954,19 @@ def chat_api():
             should_retry, reflection_reason = _should_reflect_response(cleaned_user_message, reply, intent, strictness=reflection_strictness)
             if should_retry:
                 _add_log(f"Reflection triggered: {reflection_reason}")
-                refinement_prompt = _build_reflection_prompt(cleaned_user_message, reply, reflection_reason)
+                trigger_reason = reflection_reason
+                _prompt_tracker.track_event({
+                    "type": "reflection_triggered",
+                    "intent": intent,
+                    "reason": reflection_reason,
+                })
+                guidance = _prompt_optimizer.get_guidance(reflection_reason) if _prompt_optimizer.is_enabled() else ""
+                refinement_prompt = _build_reflection_prompt(
+                    cleaned_user_message,
+                    reply,
+                    reflection_reason,
+                    extra_guidance=guidance,
+                )
                 retries = 0
                 while retries < MAX_REFLECTION_RETRIES:
                     retries += 1
@@ -910,6 +977,13 @@ def chat_api():
                         reflection_reason = "resolved"
                         break
                     reflection_reason = next_reason
+                _prompt_optimizer.learn_from_outcome(trigger_reason, resolved=(reflection_reason == "resolved"))
+                _prompt_tracker.track_event({
+                    "type": "reflection_result",
+                    "intent": intent,
+                    "result": reflection_reason,
+                    "retries": retries,
+                })
                 if reflection_reason != "resolved":
                     _add_log(f"Reflection unresolved: {reflection_reason}")
                 else:
@@ -1031,8 +1105,25 @@ def chat_stream():
                 should_retry, reason = _should_reflect_response(cleaned_user_message, reply, intent, strictness=reflection_strictness)
                 if should_retry:
                     _add_log(f"Reflection triggered: {reason}")
-                    refinement_prompt = _build_reflection_prompt(cleaned_user_message, reply, reason)
+                    _prompt_tracker.track_event({
+                        "type": "stream_reflection_triggered",
+                        "intent": intent,
+                        "reason": reason,
+                    })
+                    guidance = _prompt_optimizer.get_guidance(reason) if _prompt_optimizer.is_enabled() else ""
+                    refinement_prompt = _build_reflection_prompt(
+                        cleaned_user_message,
+                        reply,
+                        reason,
+                        extra_guidance=guidance,
+                    )
                     reply = svc.generate_response(refinement_prompt, mode=mode, options=options)
+                    _prompt_optimizer.learn_from_outcome(reason, resolved=True)
+                    _prompt_tracker.track_event({
+                        "type": "stream_reflection_result",
+                        "intent": intent,
+                        "result": "resolved",
+                    })
                     _add_log("Reflection completed in buffered stream mode")
                 reply = sanitize_model_reply(reply)
                 yield f"data: {reply}\n\n"
