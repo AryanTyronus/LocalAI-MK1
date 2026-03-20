@@ -38,3 +38,9 @@ TODO.md
 TODO_PERSISTENCE_FIX.md
 TODO_PHASE2.md
 SYNAPSE Capabilities and Test Matrix
+
+.venv/
+__pycache__/
+*.pyc
+.env
+.synapse_runtime.json
