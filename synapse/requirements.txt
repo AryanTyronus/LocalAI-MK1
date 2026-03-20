@@ -1,0 +1,4 @@
+"""SYNAPSE Requirements - Dependencies for the AI assistant."""
+
+openai>=1.3.0
+python-dotenv>=1.0.0

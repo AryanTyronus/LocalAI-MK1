@@ -1,0 +1,52 @@
+# SYNAPSE Configuration
+# =====================
+
+# API Configuration
+api:
+  base_url: "https://openrouter.ai/api/v1"
+  model: "nvidia/nemotron-3-super-120b-a12b:free"
+  timeout: 120
+  max_tokens: 8000
+
+# LLM Settings
+llm:
+  temperature: 0.7
+  top_p: 0.95
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
+
+# Memory Configuration
+memory:
+  max_messages: 20
+  persist_to_disk: false
+  persist_path: "synapse_memory.json"
+
+# Tool Configuration
+tools:
+  enabled:
+    - open_app
+    - search_web
+    - open_file
+    - read_file
+    - write_file
+  timeout: 5  # seconds for tool execution
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "synapse.log"
+  console: true
+
+# CLI Configuration
+cli:
+  show_thinking: true
+  show_actions: true
+  show_memory_on_start: false
+  auto_save_memory: true
+
+# System Prompt (if not provided, uses default)
+# system_prompt_file: "custom_prompt.txt"
+
+# API Key (recommended to use environment variable instead)
+# api_key: "${DEEPSEEK_API_KEY}"
